@@ -144,8 +144,15 @@ async function downloadImage(url, file) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const len = Number(res.headers.get('content-length') || 0);
   if (len > MAX_IMAGE_BYTES) throw new Error('too large');
-  const buf = Buffer.from(await res.arrayBuffer());
-  return storeImage(buf, file);
+  // Content-Length nélkül is korlátos: olvasás közben számolunk, és túllépéskor megszakítjuk.
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of res.body) {
+    size += chunk.length;
+    if (size > MAX_IMAGE_BYTES) throw new Error('too large');
+    chunks.push(chunk);
+  }
+  return storeImage(Buffer.concat(chunks), file);
 }
 
 /** Megfelelő (sRGB, álló helyzetű) JPEG-et újrakódolás nélkül ment; minden mást egyszer átalakít. */
@@ -215,6 +222,13 @@ export async function prepareEntries(client, athleteId, activities, ctx, opts = 
         return undefined;
       }
       if (err.status === 404) return null; // törölt / nem elérhető elem
+      // Visszavont/lejárt hozzáférés vagy elérhetetlen Strava: a könyv a már meglévő adatokból készül el
+      // (a felület jelzi, hogy adat maradt ki), ahelyett hogy az egész könyvkészítés hibával leállna.
+      if (err.status === 401 || err.status === 403 || err.status >= 500) {
+        console.warn(`Strava unavailable (${err.status}), continuing with cached data: ${err.message}`);
+        skipped = true;
+        return undefined;
+      }
       throw err;
     }
   };

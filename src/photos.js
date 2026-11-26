@@ -1,5 +1,6 @@
 // A könyvhöz letöltött fotók böngészése és letöltése (egyenként vagy ZIP-ben).
 // Ugyanazokat a helyi fájlokat adja ki, amelyekből a könyv készül (data/athletes/<id>/images/<aktivitás>/<fotó>.jpg).
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -21,17 +22,46 @@ export function photoFile(athleteId, act, pid) {
   return path.join(athleteDir(athleteId), 'images', act, `${pid}.jpg`);
 }
 
+// A bélyegkép-generálás CPU-igényes; sok felhasználó egyszerre megnyitott fotórácsa se fojtsa meg a szervert.
+const THUMB_CONCURRENCY = Math.max(1, Number(process.env.THUMB_CONCURRENCY) || 2);
+let thumbActive = 0;
+const thumbWaiters = [];
+async function withThumbSlot(fn) {
+  if (thumbActive >= THUMB_CONCURRENCY) await new Promise((r) => thumbWaiters.push(r));
+  else thumbActive++;
+  try {
+    return await fn();
+  } finally {
+    const next = thumbWaiters.shift();
+    if (next) next(); // a helyet közvetlenül átadjuk
+    else thumbActive--;
+  }
+}
+
 /** Kis előnézeti kép (lemezen gyorsítótárazva, hogy a rács ne a teljes felbontású fájlokat töltse). */
+const thumbInFlight = new Map(); // ugyanazt a bélyegképet egyszerre csak egy kérés készítse el
+
 export async function thumbFile(athleteId, act, pid) {
-  const src = photoFile(athleteId, act, pid);
   const out = path.join(athleteDir(athleteId), 'thumbs', act, `${pid}.jpg`);
   if (await exists(out)) return out;
+  let job = thumbInFlight.get(out);
+  if (!job) {
+    job = withThumbSlot(() => makeThumb(athleteId, act, pid, out)).finally(() => thumbInFlight.delete(out));
+    thumbInFlight.set(out, job);
+  }
+  return job;
+}
+
+async function makeThumb(athleteId, act, pid, out) {
+  if (await exists(out)) return out; // amíg vártunk, egy másik kérés elkészítette
+  const src = photoFile(athleteId, act, pid);
   if (!(await exists(src))) return null;
   await fs.mkdir(path.dirname(out), { recursive: true });
-  const tmp = `${out}.${process.pid}.tmp`;
+  // Egyedi ideiglenes név: két egyidejű kérés ugyanarra a bélyegképre ne írja felül egymást.
+  const tmp = `${out}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   await sharp(src, { failOn: 'none' }).rotate()
     .resize({ width: 360, height: 360, fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 72, mozjpeg: true }).toFile(tmp);
+    .jpeg({ quality: 74 }).toFile(tmp); // gyors libjpeg-turbo: a bélyegképnél a sebesség fontosabb a pár %-nyi méretnél
   await fs.rename(tmp, out);
   return out;
 }
@@ -97,7 +127,10 @@ export async function streamZip(athleteId, refs, res, filename) {
     for (const [pid] of chosen) {
       // A sorszám az aktivitás teljes fotólistájában elfoglalt hely, így részleges letöltésnél is stabil.
       const n = photos.findIndex(([p]) => p === pid) + 1;
-      zip.addFile(photoFile(athleteId, act, pid), `${folder}/${String(n).padStart(2, '0')}.jpg`, { compress: false });
+      const file = photoFile(athleteId, act, pid);
+      // Az index szerint meglévő, de a lemezről hiányzó fájl ne szakítsa meg félúton a teljes ZIP-et.
+      if (!(await exists(file))) continue;
+      zip.addFile(file, `${folder}/${String(n).padStart(2, '0')}.jpg`, { compress: false });
       count++;
     }
   }

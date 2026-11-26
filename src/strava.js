@@ -1,7 +1,8 @@
 // Strava API kliens: OAuth, token-frissítés, közös rate-limit kapu (15 perces és napi keret).
 
-const API = 'https://www.strava.com/api/v3';
-const OAUTH = 'https://www.strava.com/oauth';
+// A címek felülírhatók (csak tesztekhez: ál-Strava szerver), élesben mindig a Strava saját címei.
+const API = process.env.STRAVA_API_URL || 'https://www.strava.com/api/v3';
+const OAUTH = process.env.STRAVA_OAUTH_URL || 'https://www.strava.com/oauth';
 export const SCOPES = 'read,activity:read_all';
 
 export class StravaError extends Error {
@@ -56,6 +57,17 @@ export async function deauthorize(accessToken) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A Strava kerete az egész alkalmazásra vonatkozik (nem felhasználónként), ezért a szünetet minden kliens
+// közösen tartja: ha egy felhasználó kérése eléri a keretet, a többiek sem küldenek feleslegesen 429-et kiváltó kérést.
+const shared = { pauseUntil: 0, kind: null };
+export function sharedPause() {
+  return { ...shared };
+}
+export function resetSharedPause() {
+  shared.pauseUntil = 0;
+  shared.kind = null;
+}
+
 /** A 15 perces keret negyedóránként (:00, :15, :30, :45), a napi éjfélkor (UTC) nullázódik. */
 export function nextWindow() {
   const now = new Date();
@@ -107,6 +119,10 @@ export class StravaClient {
   }
 
   pause(until, kind) {
+    if (until > shared.pauseUntil) {
+      shared.pauseUntil = until;
+      shared.kind = kind;
+    }
     if (until > this.pauseUntil) {
       this.pauseUntil = until;
       this.pauseKind = kind;
@@ -118,6 +134,8 @@ export class StravaClient {
   async gate() {
     for (;;) {
       if (this.hooks.shouldSkip?.()) throw new SkipApiError();
+      // más felhasználó kérése által elért közös keret: a saját feladatunk is jelezze a várakozást
+      if (shared.pauseUntil > this.pauseUntil && shared.pauseUntil > Date.now()) this.pause(shared.pauseUntil, shared.kind);
       const left = this.pauseUntil - Date.now();
       if (left <= 0) return;
       await sleep(Math.min(left, 1000));

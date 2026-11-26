@@ -374,7 +374,7 @@ $('#archive').addEventListener('change', async (e) => {
     });
     const job = await runJob(jobId, (j) => {
       bar.firstElementChild.style.width = j.total ? `${Math.round((j.done / j.total) * 100)}%` : '100%';
-      $('#archive-status').textContent = `${tr(`phase.${j.phase}`)}${j.total ? ` ${nf().format(j.done)} / ${nf().format(j.total)}` : ''}`;
+      $('#archive-status').textContent = `${phaseLabel(j)}${j.total ? ` ${nf().format(j.done)} / ${nf().format(j.total)}` : ''}`;
     });
     state.status.archive = job.result;
     renderArchive();
@@ -738,9 +738,12 @@ function countdown(until) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** A feladat aktuális lépése olvasható formában (indulás előtt „…”, sorban állásnál a hely is). */
+const phaseLabel = (j) => (j.phase ? tr(`phase.${j.phase}`, { n: j.queuePos }) : '…');
+
 function renderProgress(j) {
   $('#progress').hidden = false;
-  $('#progress-phase').textContent = tr(`phase.${j.phase}`) || '…';
+  $('#progress-phase').textContent = phaseLabel(j);
   const bar = $('#progress-bar');
   bar.parentElement.classList.toggle('indeterminate', !j.total);
   bar.style.width = j.total ? `${Math.round((j.done / j.total) * 100)}%` : '';
@@ -1116,7 +1119,7 @@ $('#photos-fetch').addEventListener('click', async () => {
     const job = await runJob(jobId, (j) => {
       bar.firstElementChild.style.width = j.total ? `${Math.round((j.done / j.total) * 100)}%` : '100%';
       const wait = j.waitUntil ? ` · ${tr('prog.wait', { k: tr(`wait.${j.waitKind}`), t: countdown(j.waitUntil) })}` : '';
-      $('#photos-status').textContent = `${tr(`phase.${j.phase}`)}${j.total ? ` ${nf().format(j.done)} / ${nf().format(j.total)}` : ''}${wait}`;
+      $('#photos-status').textContent = `${phaseLabel(j)}${j.total ? ` ${nf().format(j.done)} / ${nf().format(j.total)}` : ''}${wait}`;
     });
     await loadPhotos();
     const r = job.result;

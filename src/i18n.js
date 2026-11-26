@@ -74,6 +74,8 @@ const T = {
     errLogin: 'Jelentkezz be a Stravával.',
     errNoActivities: 'Előbb töltsd be az aktivitásokat.',
     errNoPhotos: 'Nincs letölthető fotó.',
+    errTooLarge: 'A fájl túl nagy.',
+    errNoSpace: 'Nincs elég szabad hely a szerveren. Próbáld később.',
     errEmptySelection: 'A szűrésnek egyetlen aktivitás sem felel meg.',
     errBusy: 'Már fut egy feladat. Várd meg, amíg befejeződik.',
     errNoJob: 'Nincs ilyen feladat.',
@@ -162,6 +164,8 @@ const T = {
     errLogin: 'Please sign in with Strava.',
     errNoActivities: 'Load your activities first.',
     errNoPhotos: 'No photos to download.',
+    errTooLarge: 'The file is too large.',
+    errNoSpace: 'Not enough free space on the server. Please try again later.',
     errEmptySelection: 'No activity matches the current filters.',
     errBusy: 'A task is already running. Please wait for it to finish.',
     errNoJob: 'No such task.',
@@ -242,7 +246,8 @@ const SPORTS = {
 };
 
 export function normLang(l) {
-  return LANGS.includes(l) ? l : 'en';
+  const v = String(l || '').trim().toLowerCase();
+  return LANGS.includes(v) ? v : 'en';
 }
 
 export function t(lang, key, vars = {}) {

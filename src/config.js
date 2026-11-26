@@ -3,9 +3,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-try {
-  process.loadEnvFile('.env');
-} catch { /* nincs .env – környezeti változókból dolgozunk */ }
+// A tesztek LAPBYLAP_NO_DOTENV=1-gyel futnak, hogy a fejlesztő gépén lévő valódi kulcsokat ne lássák.
+if (process.env.LAPBYLAP_NO_DOTENV !== '1') {
+  try {
+    process.loadEnvFile('.env');
+  } catch { /* nincs .env – környezeti változókból dolgozunk */ }
+}
 
 export const PORT = Number(process.env.PORT || 3000);
 // Renderen a RENDER_EXTERNAL_URL magától adott (https://<név>.onrender.com), így a BASE_URL-t nem kell kézzel megadni.
@@ -26,7 +29,7 @@ export const GEOIP = {
 export const DEFAULT_LANG = process.env.DEFAULT_LANG === 'hu' ? 'hu' : 'en';
 // Express 'trust proxy': "true"/"false", ugrásszám (pl. "1"), vagy cím-/hálózatlista (pl. "loopback").
 // Renderen a kliens IP-je csak a nyelvfelismeréshez kell, ezért ott a teljes X-Forwarded-For láncot elfogadjuk.
-const parseTrust = (v) => (v === 'true' ? true : v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v);
+export const parseTrust = (v) => (v === 'true' ? true : v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v);
 export const TRUST_PROXY = parseTrust(process.env.TRUST_PROXY || (process.env.RENDER ? 'true' : 'loopback'));
 
 export const isConfigured = () => Boolean(STRAVA.clientId && STRAVA.clientSecret);

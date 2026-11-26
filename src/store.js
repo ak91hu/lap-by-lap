@@ -60,26 +60,3 @@ export async function deleteAllData(id) {
   await fs.rm(athleteDir(id), { recursive: true, force: true });
   await fs.rm(booksDir(id), { recursive: true, force: true });
 }
-
-// ------------------------------------------------------------------ könyvek
-
-export async function listBooks(id) {
-  const dir = booksDir(id);
-  let names = [];
-  try {
-    names = (await fs.readdir(dir)).filter((n) => n.endsWith('.pdf'));
-  } catch {
-    return [];
-  }
-  const out = await Promise.all(names.map(async (name) => {
-    const st = await fs.stat(path.join(dir, name));
-    return { name, size: st.size, createdAt: st.mtimeMs };
-  }));
-  return out.sort((a, b) => b.createdAt - a.createdAt);
-}
-
-export function safeBookPath(id, name) {
-  const base = path.basename(String(name));
-  if (!base.endsWith('.pdf') || base !== name) return null;
-  return path.join(booksDir(id), base);
-}

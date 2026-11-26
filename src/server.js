@@ -4,14 +4,16 @@ import fsp from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import express from 'express';
 import sharp from 'sharp';
-import { PORT, BASE_URL, STRAVA, SESSION_SECRET, TRUST_PROXY, isConfigured } from './config.js';
+import { PORT, BASE_URL, DATA_DIR, STRAVA, SESSION_SECRET, TRUST_PROXY, isConfigured } from './config.js';
 import { authorizeUrl, exchangeCode, deauthorize, StravaClient } from './strava.js';
-import { createJob, getJob, publicJob, activeJob } from './jobs.js';
+import { createJob, getJob, publicJob, activeJob, queueStats } from './jobs.js';
 import { syncActivities, loadActivities, loadAthlete, summarize, prepareEntries, downloadAvatar } from './sync.js';
-import { athleteDir, booksDir, loadTokens, saveTokens, deleteTokens, deleteAllData, listBooks, safeBookPath, readJson, writeJson } from './store.js';
+import { athleteDir, booksDir, loadTokens, saveTokens, deleteTokens, deleteAllData, readJson, writeJson } from './store.js';
+import { storeBook, listBooks, getBook, sendBook, deleteBook, deleteAllBooks, applyRetention, startRetentionTimer, remoteEnabled } from './storage.js';
 import { buildBook, buildCoverSpread, PAGE_SIZES, THEMES, PAPER_CALIPER } from './pdf/book.js';
 import { ImagePrep } from './pdf/images.js';
 import { basemapEnabled } from './pdf/maps.js';
@@ -19,8 +21,24 @@ import { Fmt, activityType, year } from './format.js';
 import { detectLang } from './geo.js';
 import { importArchive, archiveInfo } from './archive.js';
 import { listPhotos, parseRef, photoFile, thumbFile, downloadName, streamZip } from './photos.js';
-import { addWeather, weatherEnabled } from './weather.js';
+import { addWeather } from './weather.js';
+import { sanitizeOptions, slugify } from './options.js';
 import { t, sportName, normLang } from './i18n.js';
+
+const ARCHIVE_MAX_BYTES = Number(process.env.ARCHIVE_MAX_GB || 10) * 1024 ** 3;
+const DISK_RESERVE_BYTES = 512 * 1024 ** 2;
+let reservedDisk = 0;
+
+/** Lefoglal helyet egy feltöltésnek, ha a lemezen (a többi futó feltöltéssel együtt) elfér. */
+async function reserveDisk(bytes) {
+  try {
+    const st = await fsp.statfs(DATA_DIR);
+    const free = st.bavail * st.bsize;
+    if (bytes && free - reservedDisk - bytes < DISK_RESERVE_BYTES) return false;
+  } catch { /* statfs nem elérhető: nem korlátozunk */ }
+  reservedDisk += bytes;
+  return true;
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -84,6 +102,12 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   req.lang = normLang(req.get('x-lang') || req.cookies.kk_lang || 'en');
   next();
+});
+
+// Állapotjelzés a platform egészségellenőrzéséhez és a terhelésméréshez (személyes adat nélkül).
+app.get('/healthz', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, uptimeS: Math.round(process.uptime()), rssMb: Math.round(process.memoryUsage().rss / 1048576), heavyJobs: queueStats() });
 });
 
 // ------------------------------------------------------------------ statikus fájlok
@@ -168,6 +192,7 @@ app.post('/api/forget', requireAuth, async (req, res) => {
   const tokens = await loadTokens(req.athleteId);
   if (tokens?.accessToken) await deauthorize(tokens.accessToken);
   await deleteTokens(req.athleteId);
+  await deleteAllBooks(req.athleteId); // a távoli (S3) példányokkal együtt
   await deleteAllData(req.athleteId);
   res.clearSession();
   res.json({ ok: true });
@@ -268,11 +293,26 @@ app.post('/api/archive', requireAuth, async (req, res) => {
   const dir = athleteDir(athleteId);
   await fsp.mkdir(dir, { recursive: true });
   const zipFile = path.join(dir, `upload-${Date.now()}.zip`);
+  // Méretkorlát, hogy egy hibás vagy rosszindulatú feltöltés ne töltse meg a lemezt.
+  const declared = Number(req.get('content-length') || 0);
+  if (declared > ARCHIVE_MAX_BYTES) return res.status(413).json({ error: t(req.lang, 'errTooLarge') });
+  // Szabad hely: a többi folyamatban lévő feltöltés által lefoglalt hellyel együtt, 512 MB tartalékkal.
+  if (!(await reserveDisk(declared))) return res.status(507).json({ error: t(req.lang, 'errNoSpace') });
+  let received = 0;
+  const limiter = new Transform({
+    transform(chunk, _enc, cb) {
+      received += chunk.length;
+      cb(received > ARCHIVE_MAX_BYTES ? Object.assign(new Error('too large'), { code: 'TOO_LARGE' }) : null, chunk);
+    },
+  });
   try {
-    await pipeline(req, createWriteStream(zipFile));
-  } catch {
+    await pipeline(req, limiter, createWriteStream(zipFile));
+  } catch (err) {
     await fsp.rm(zipFile, { force: true });
+    if (err.code === 'TOO_LARGE') return res.status(413).json({ error: t(req.lang, 'errTooLarge') });
     return res.status(400).json({ error: 'Upload failed' });
+  } finally {
+    reservedDisk -= declared;
   }
   const lang = req.lang;
   if (activeJob(req.owner)) { // feltöltés közben indult egy másik feladat
@@ -349,75 +389,8 @@ app.put('/api/settings', requireAuth, express.json({ limit: '1mb' }), async (req
   res.json({ ok: true });
 });
 
-function sanitizeOptions(body, req) {
-  const o = body || {};
-  const str = (v, max) => String(v ?? '').trim().slice(0, max);
-  const bool = (v, def) => (v === undefined ? def : Boolean(v));
-  return {
-    lang: normLang(o.lang || req.lang),
-    units: ['metric', 'imperial'].includes(o.units) ? o.units : 'auto',
-    title: str(o.title, 80) || 'Lap by Lap',
-    subtitle: str(o.subtitle, 120),
-    dedication: str(o.dedication, 600),
-    pageSize: PAGE_SIZES[o.pageSize] ? o.pageSize : 'a4',
-    theme: THEMES[o.theme] ? o.theme : 'sunrise',
-    typeface: ['modern', 'sport', 'elegant'].includes(o.typeface) ? o.typeface : 'classic',
-    coverStyle: o.coverStyle === 'routes' ? 'routes' : 'photo',
-    titlePos: ['top', 'center'].includes(o.titlePos) ? o.titlePos : 'bottom',
-    layout: ['gallery', 'journal'].includes(o.layout) ? o.layout : 'magazine',
-    tone: ['cream', 'night'].includes(o.tone) ? o.tone : 'white',
-    accent: /^#[0-9a-f]{6}$/i.test(o.accent || '') ? o.accent : null,
-    routeColor: o.routeColor === 'ink' ? 'ink' : 'accent',
-    chapters: ['month', 'season', 'sport', 'none'].includes(o.chapters) ? o.chapters : 'year',
-    order: o.order === 'desc' ? 'desc' : 'asc',
-    stats: Array.isArray(o.stats) ? o.stats.filter((k) => ['distance', 'time', 'elevation', 'pace', 'weather', 'hr', 'power', 'calories', 'high', 'kudos'].includes(k)) : null,
-    excludePhotos: new Set((Array.isArray(o.excludePhotos) ? o.excludePhotos.slice(0, 50000) : []).map(parseRef).filter(Boolean).map((r) => r.join('/'))),
-    weather: bool(o.weather, true) && weatherEnabled(),
-    qr: bool(o.qr, true),
-    favorites: Array.isArray(o.favorites) ? o.favorites.map(String).slice(0, 200) : [],
-    mapPins: bool(o.mapPins, true),
-    runningHeads: bool(o.runningHeads, true),
-    afterword: str(o.afterword, 2000),
-    notesPages: [0, 2, 4, 8].includes(Number(o.notesPages)) ? Number(o.notesPages) : 0,
-    excludePrivate: bool(o.excludePrivate, false),
-    excludeCommute: bool(o.excludeCommute, false),
-    excludeIndoor: bool(o.excludeIndoor, false),
-    minKm: Math.max(0, Math.min(500, Number(o.minKm) || 0)),
-    coverId: /^cover-[a-f0-9]{16}\.jpg$/.test(o.coverId || '') ? o.coverId : null,
-    from: /^\d{4}-\d{2}-\d{2}$/.test(o.from || '') ? o.from : null,
-    to: /^\d{4}-\d{2}-\d{2}$/.test(o.to || '') ? o.to : null,
-    types: Array.isArray(o.types) ? new Set(o.types.map(String)) : null,
-    exclude: new Set(Array.isArray(o.exclude) ? o.exclude.map(String) : []),
-    onlyPhotos: bool(o.onlyPhotos, false),
-    maxPhotos: [0, 3, 6, 12, 24].includes(Number(o.maxPhotos)) ? Number(o.maxPhotos) : 0,
-    listNoPhoto: bool(o.listNoPhoto, true),
-    yearPages: bool(o.yearPages, true),
-    routesPage: bool(o.routesPage, true),
-    toc: bool(o.toc, true),
-    showMaps: bool(o.showMaps, true),
-    elevation: bool(o.elevation, true),
-    showDescriptions: bool(o.showDescriptions, true),
-    showCaptions: bool(o.showCaptions, true),
-    privacyMeters: [0, 200, 500, 1000].includes(Number(o.privacyMeters)) ? Number(o.privacyMeters) : 200,
-    quality: o.quality === 'screen' ? 'screen' : 'print',
-    bleed: bool(o.bleed, false),
-    cropMarks: bool(o.cropMarks, false),
-    gutter: bool(o.gutter, true),
-    padToFour: bool(o.padToFour, true),
-    split: o.split === 'year' ? 'year' : 'none',
-    coverSpread: bool(o.coverSpread, false),
-    paper: PAPER_CALIPER[o.paper] ? o.paper : 'standard',
-    spineMm: Math.max(0, Math.min(80, Number(o.spineMm) || 0)),
-    preview: bool(o.preview, false),
-  };
-}
-
-function slugify(s) {
-  return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 50) || 'book';
-}
-
 app.post('/api/book', requireAuth, express.json({ limit: '2mb' }), async (req, res) => {
-  const opts = sanitizeOptions(req.body, req);
+  const opts = sanitizeOptions(req.body, req.lang);
   const athleteId = req.athleteId;
   const all = await loadActivities(athleteId);
   if (!all) return res.status(400).json({ error: t(opts.lang, 'errNoActivities') });
@@ -498,7 +471,14 @@ app.post('/api/book', requireAuth, express.json({ limit: '2mb' }), async (req, r
         files.push({ name: coverName, kind: 'cover', label: v.label, spineMm: cs.spineMm, widthMm: cs.widthMm, heightMm: cs.heightMm });
       }
     }
-    for (const f of files) f.size = (await fsp.stat(path.join(outDir, f.name))).size;
+    // Nyilvántartás + (ha be van állítva) feltöltés az S3-tárolóba, majd a megőrzési szabályok.
+    if (remoteEnabled() && !opts.preview) ctx.phase('phaseUpload', files.length);
+    for (const f of files) {
+      const meta = await storeBook(athleteId, { name: f.name, build: base, kind: f.kind, preview: opts.preview, pages: f.pages || null, label: f.label || '' });
+      f.size = meta.size;
+      ctx.tick();
+    }
+    await applyRetention(athleteId);
     return {
       files, pages, photos, lowRes: lowRes.slice(0, 100), lowResCount: lowRes.length, failedPhotos, skipped,
       activities: entries.length, trimSize: `${PAGE_SIZES[opts.pageSize].w} × ${PAGE_SIZES[opts.pageSize].h} mm`,
@@ -563,20 +543,15 @@ app.post('/api/photos/fetch', requireAuth, async (req, res) => {
 
 app.get('/api/books', requireAuth, async (req, res) => res.json(await listBooks(req.athleteId)));
 
-app.get('/api/books/:name', requireAuth, (req, res) => {
-  const file = safeBookPath(req.athleteId, req.params.name);
-  if (!file) return res.status(400).end();
-  if (req.query.inline !== undefined) {
-    res.set('Content-Disposition', `inline; filename="${path.basename(file)}"`);
-    return res.sendFile(file, (err) => err && !res.headersSent && res.status(404).end());
-  }
-  res.download(file, path.basename(file), (err) => err && !res.headersSent && res.status(404).end());
+app.get('/api/books/:name', requireAuth, async (req, res) => {
+  if (!/^[\w.-]+\.pdf$/.test(req.params.name)) return res.status(400).end();
+  const meta = await getBook(req.athleteId, req.params.name);
+  if (!meta) return res.status(404).end();
+  await sendBook(req.athleteId, meta, req, res, req.query.inline !== undefined ? 'inline' : 'attachment');
 });
 
 app.delete('/api/books/:name', requireAuth, async (req, res) => {
-  const file = safeBookPath(req.athleteId, req.params.name);
-  if (!file) return res.status(400).end();
-  await fsp.rm(file, { force: true });
+  if (!(await deleteBook(req.athleteId, req.params.name))) return res.status(400).end();
   res.json({ ok: true });
 });
 
@@ -585,6 +560,8 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   res.status(err.status || 500).json({ error: err.expose ? err.message : 'Server error' });
 });
+
+startRetentionTimer();
 
 app.listen(PORT, () => {
   console.log(`\n  Lap by Lap: ${BASE_URL}\n`);

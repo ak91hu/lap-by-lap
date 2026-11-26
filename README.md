@@ -35,10 +35,13 @@
 - [Configuration](#configuration)
 - [Deployment](#deployment)
 - [Performance](#performance)
+- [Capacity and concurrent users](#capacity-and-concurrent-users)
+- [Storing finished books](#storing-finished-books)
 - [Privacy and data storage](#privacy-and-data-storage)
 - [HTTP API](#http-api)
 - [Project structure](#project-structure)
 - [Development](#development)
+- [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
 - [License and credits](#license-and-credits)
 
@@ -246,6 +249,13 @@ All settings are environment variables, read from `.env` when present.
 | `MAP_TILE_URL` | – | Optional basemap tiles for route maps, e.g. `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png`. Without it, routes are drawn as clean vector maps. Respect the provider's terms. |
 | `MAP_ATTRIBUTION` | `© OpenStreetMap contributors` | Attribution printed with basemap tiles. |
 | `WEATHER` | on | `off` disables the weather lookup (Open-Meteo). |
+| `MAX_HEAVY_JOBS` | from memory | How many memory-heavy jobs (book, preview, archive import) run at once; the rest wait in a queue. Default: `(container memory − 200 MB) / 450 MB`, at least 1, at most the CPU count. |
+| `THUMB_CONCURRENCY` | `2` | Parallel thumbnail generations. |
+| `ARCHIVE_MAX_GB` | `10` | Largest accepted Strava archive upload. Uploads are also refused when the disk would drop below 512 MB free. |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_PREFIX` | – | Optional S3-compatible storage for finished books (Backblaze B2, Cloudflare R2, MinIO …). See [Storing finished books](#storing-finished-books). |
+| `BOOKS_KEEP` | `5` | Finished books kept per athlete (volumes and cover spreads of one build count as one book). |
+| `BOOKS_TTL_DAYS` | `0` (never) | Delete finished books after this many days. |
+| `PREVIEW_TTL_HOURS` | `24` | Previews are deleted after this many hours. |
 
 ## Deployment
 
@@ -319,6 +329,51 @@ Measured with 1,000 activities and 1,386 photos: a **388-page A4 PDF** in **74 s
 - **Prioritised API sync:** photo lists → images → descriptions → streams, with bounded concurrency and a shared rate-limit handler.
 - **Light sessions:** signed-cookie sessions with no server-side session store, and one running job per athlete.
 
+## Capacity and concurrent users
+
+Built and measured for **20–30 people using the app at the same time** (`npm run loadtest`):
+
+- **Memory-safe queue.** Laying out a book peaks around 300–370 MB, so the number of books (and archive imports) made at the same time is limited to what fits the container's memory (`MAX_HEAVY_JOBS`, 1 on a 512 MB instance). Everyone else sees their position (*In the queue, position 3*) and the job starts automatically. Light requests (browsing, photos, settings) never wait in this queue.
+- **One shared Strava quota.** Strava's rate limit (100 requests / 15 min, 1,000 / day) applies to the whole app, not per user. When one user's request hits the limit, every other sync pauses too instead of collecting 429 errors, and each user's progress shows the wait.
+- **One job per athlete**, bounded thumbnail generation (`THUMB_CONCURRENCY`, de-duplicated per image), streamed ZIP and PDF downloads, and a disk-space check before archive uploads.
+- **Health endpoint:** `GET /healthz` returns uptime, memory and the job queue (no personal data).
+
+Load test with 30 simultaneous users for 60 s (each browsing, opening the photo grid, saving settings and downloading ZIPs), while 15 of them requested a book or preview, with `MAX_HEAVY_JOBS=1` and a 384 MB heap to mimic the free Northflank instance:
+
+| Request | p50 | p95 | Notes |
+|---|---|---|---|
+| Status / settings save | 3–4 ms | 60–140 ms | during PDF layout |
+| Thumbnail | 2 ms | ~1.1 s | p95 is the first generation; cached afterwards |
+| ZIP of 3 photos | 19 ms | ~0.5 s | streamed |
+
+Result: **no errors**, all 15 books done within 44 s of being requested (queue included), server memory peak **280–297 MB**. The test machine is faster than a 0.2 vCPU instance, so on the free tier expect the same behaviour with longer book times; for 20–30 *active* book makers a larger instance (e.g. `nf-compute-50`, 0.5 vCPU / 1 GB) is recommended.
+
+> **Strava athlete capacity.** A Strava API app can connect up to **10 athletes** after self-upgrading in the API settings. For 20–30 users, apply for Strava's *Extended Access* review.
+
+## Storing finished books
+
+Finished PDFs are large (about 40 MB for 400 pages at 300 DPI), so they are managed on purpose:
+
+- **Retention, always on:** previews are deleted after 24 hours (`PREVIEW_TTL_HOURS`); each athlete keeps their **5 latest books** (`BOOKS_KEEP`; the volumes and cover spreads of one build count as one book), optionally with an age limit (`BOOKS_TTL_DAYS`). Cleanup runs after every build and hourly.
+- **Optional S3-compatible storage:** set the `S3_*` variables and every finished book (not previews) is uploaded right after it is made, and the local copy is deleted, so the server's disk only holds photos and the cache. Downloads and the in-browser viewer stream the file from the bucket through the app (with HTTP Range support), so the bucket stays private and no public links exist. Deleting a book or all your data deletes the stored objects too.
+
+Free options (both S3-compatible, 10 GB free):
+
+| Service | Free | Notes |
+|---|---|---|
+| **Backblaze B2** | 10 GB storage, egress free up to 3× the stored amount | No credit card needed to sign up. Endpoint like `https://s3.eu-central-003.backblazeb2.com`, region `eu-central-003`. |
+| **Cloudflare R2** | 10 GB-month storage, no egress fees | May ask for a payment method. Endpoint `https://<account-id>.r2.cloudflarestorage.com`, region `auto`. |
+
+```ini
+S3_ENDPOINT=https://s3.eu-central-003.backblazeb2.com
+S3_REGION=eu-central-003
+S3_BUCKET=lap-by-lap-books          # a private bucket
+S3_ACCESS_KEY_ID=<keyID>            # an application key limited to this bucket
+S3_SECRET_ACCESS_KEY=<applicationKey>
+```
+
+Book metadata (`<name>.pdf.json`: size, pages, build, where it is stored) stays next to the local books folder.
+
 ## Privacy and data storage
 
 - Everything is stored as files in `DATA_DIR`, written atomically (temp file + rename):
@@ -337,7 +392,8 @@ Measured with 1,000 activities and 1,386 photos: a **388-page A4 PDF** in **74 s
       uploads/                   your cover photo
       weather/<activityId>.json  cached weather at the start
       settings.json              your saved book settings
-    books/<athleteId>/*.pdf      finished books and cover spreads
+    books/<athleteId>/*.pdf      finished books and cover spreads (only metadata when stored in S3)
+    books/<athleteId>/*.pdf.json book metadata: size, pages, build, local or S3
     tiles/                       basemap tile cache (only with MAP_TILE_URL)
   ```
 
@@ -368,7 +424,8 @@ The UI is a thin client over these endpoints. All `/api/*` routes except `status
 | `GET /api/photos/:activity/:photo` | A photo (`?thumb` for a thumbnail, `?download` as an attachment) |
 | `POST /api/photos/zip` | Streamed ZIP (`application/x-www-form-urlencoded`: `all=1` or `ids=<activity>/<photo>` lines) |
 | `POST /api/photos/fetch` | Job: download missing photos without making a book |
-| `POST /api/forget` | Delete all data and revoke Strava access |
+| `POST /api/forget` | Delete all data (including books in S3) and revoke Strava access |
+| `GET /healthz` | Uptime, memory, job queue (public, no personal data) |
 
 ## Project structure
 
@@ -380,8 +437,10 @@ src/
   sync.js         Prioritised, parallel, cached download of activities, photos, details, streams
   archive.js      Strava archive import: CSV, FIT/GPX/TCX, EXIF (GPS + time), streamed ZIP
   photos.js       Photo listing, thumbnails, single and ZIP downloads (yazl, streamed)
+  storage.js      Finished-book storage: local or S3-compatible (aws4fetch), retention, streamed downloads
+  options.js      Validation and defaults of the book options
   weather.js      Weather at the activity start (Open-Meteo), cached per activity
-  jobs.js         In-memory background jobs with progress
+  jobs.js         In-memory background jobs with progress and a memory-safe queue for heavy jobs
   store.js        File store (atomic writes), tokens, books
   geo.js          IP → country → language
   i18n.js         Server and PDF strings (en/hu), sport names
@@ -399,6 +458,8 @@ public/sample/    Pre-rendered pages of the landing-page sample book (en/hu)
 tools/
   build-sample.mjs      Renders the sample book (fictional athlete) to WebP pages
   northflank-setup.mjs  One-time Northflank setup
+  loadtest.mjs          Load test: N simultaneous users with fictional data and a mock Strava
+test/             node:test suites (unit, modules, PDF layout, server integration, storage, static UI)
 Dockerfile        Production image (Node 24, DATA_DIR=/data)
 ```
 
@@ -408,13 +469,28 @@ Dockerfile        Production image (Node 24, DATA_DIR=/data)
 npm run dev       # restart on file changes (node --watch)
 npm run check     # syntax check of the server and the client
 npm run sample    # re-render the landing-page sample book (needs the dev dependency mupdf)
+npm test          # the full test suite (about a minute)
+npm run loadtest  # 30 simultaneous users for 60 s (USERS, DURATION, BOOKS, MAX_HEAVY_JOBS, HEAP_MB)
 ```
 
 The UI has no build step: edit `public/*.js` and `public/style.css` and reload. UI strings are in `public/i18n.js`, book and server strings in `src/i18n.js`, always in both languages.
 
 The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes and a fictional athlete. Re-render it after layout changes. User books are always made from real Strava data.
 
-**Dependencies:** `express` 5.3, `pdfkit` 0.21, `sharp` 0.35, `@garmin/fitsdk` 21.222, `yauzl` 3.4, `yazl` 3.3, `qrcode` 1.5, `exif-reader` 2.0, and the Inter, Fraunces, Oswald and Playfair Display fonts.
+**Dependencies:** `express` 5.3, `pdfkit` 0.21, `sharp` 0.35, `@garmin/fitsdk` 21.222, `yauzl` 3.4, `yazl` 3.3, `qrcode` 1.5, `aws4fetch` 1.0, `exif-reader` 2.0, and the Inter, Fraunces, Oswald and Playfair Display fonts.
+
+## Tests
+
+`npm test` runs 84 tests with Node's built-in test runner. No extra test framework is needed; PDFs are checked with the `mupdf` dev dependency. All tests use **fictional athletes in temporary folders**, a **mock Strava server** (OAuth, API v3, photo CDN) and a **mock S3 server**. They never touch your `data/` folder, never read your `.env` (`LAPBYLAP_NO_DOTENV=1`) and never call the real Strava API (`STRAVA_API_URL` / `STRAVA_OAUTH_URL` point to the mock or to an unreachable local address; these two variables exist only for tests).
+
+| Suite | What it covers |
+|---|---|
+| `unit` | CSV parsing, formatting and units, polylines, stream thinning, weather codes, input validation, proxy settings, queue sizing, Strava client (shared rate-limit pause, token refresh on 401, errors) |
+| `modules` | Photo listing, ZIP (all, selection, missing files), concurrent thumbnails, weather lookup and caching, the heavy-job queue, Strava archive import (CSV, captions, videos, GPX, re-import, broken ZIP) |
+| `book` | 26 PDF builds: every layout × paper tone, every page size, bleed and crop marks, chapters, order, extras, English/imperial, weather and QR, left-out photos, max photos, yearly volumes and cover spread, books without photos |
+| `server` | The full journey through the real server: OAuth (state, scope, denial), sync, photo fetch, books from API data, photo grid/ZIP, settings, covers, preview and full books, yearly volumes, deletion, archive upload (size limit, broken ZIP), revoked Strava access, logout and data deletion; plus security headers, caching rules, 401s, forged cookies, path traversal and other users' data |
+| `storage` | Retention rules, legacy files, S3 upload with signed requests, local copy removal, streamed and ranged downloads, previews kept local, retention and deletion in S3, data deletion |
+| `ui-static` | Every element the UI script uses exists, no duplicate ids, Hungarian and English strings match (keys and placeholders), every server job step and job kind has a label, no `innerHTML` with user data |
 
 ## Troubleshooting
 
@@ -426,7 +502,9 @@ The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes an
 | Book build waits for a long time | The Strava rate limit was hit. Wait (the job resumes by itself), click **Build now with the data already downloaded**, or import your Strava archive. |
 | Signed out after every restart | Set a fixed `SESSION_SECRET`, or keep `DATA_DIR` on persistent storage. |
 | Photos missing in the book | Some photos failed to download or are videos/HEIC. Use **Fetch missing photos**, or import the archive for originals. |
-| Out of memory on a small instance | Use screen quality, split the book into yearly volumes, or give the app more RAM. |
+| Out of memory on a small instance | Keep `MAX_HEAVY_JOBS=1`, use screen quality, split the book into yearly volumes, or give the app more RAM. |
+| "In the queue" for a long time | Other users' books are being made; the job starts automatically. Raise `MAX_HEAVY_JOBS` only if the instance has the memory for it. |
+| Raw text keys like `con.weather` after a deploy | An old cached script; reload once with Ctrl+F5. Since this release UI files are revalidated on every load. |
 
 ## License and credits
 
