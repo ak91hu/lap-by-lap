@@ -1,0 +1,40 @@
+{
+  "name": "lap-by-lap",
+  "version": "2.0.0",
+  "description": "Print-ready PDF photo books from your real Strava activities and photos – Lapról lapra: nyomdakész fotókönyv a Strava-aktivitásaidból",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js && node --check public/app.js",
+    "sample": "node tools/build-sample.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "keywords": [
+    "strava",
+    "photobook",
+    "pdf",
+    "print",
+    "fotokonyv"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@expo-google-fonts/fraunces": "^0.4.1",
+    "@expo-google-fonts/inter": "^0.4.2",
+    "@expo-google-fonts/oswald": "^0.4.2",
+    "@expo-google-fonts/playfair-display": "^0.4.2",
+    "@garmin/fitsdk": "^21.222.0",
+    "exif-reader": "^2.0.3",
+    "express": "^5.3.0",
+    "pdfkit": "^0.21.0",
+    "sharp": "^0.35.5",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "mupdf": "^1.28.6"
+  }
+}
