@@ -262,6 +262,7 @@ for (const lang of ['hu', 'en']) {
     athlete: { firstname: 'Kata', lastname: lang === 'hu' ? 'Példa' : 'Sample', city: 'Budapest', country: lang === 'hu' ? 'Magyarország' : 'Hungary' },
     avatarFile: null,
     options: {
+      qr: false, // a kitalált azonosítók valódi, idegen Strava-aktivitásokra mutatnának
       title: lang === 'hu' ? 'Egy év a szabadban' : 'A year outdoors',
       subtitle: lang === 'hu' ? 'Kalandjaim 2025' : 'My adventures 2025',
       dedication: lang === 'hu' ? 'Mindenkinek, aki velem tartott az úton.' : 'For everyone who came along.',

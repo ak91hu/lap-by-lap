@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode';
 import { activityType, localDate, year } from '../format.js';
 import { loadStreams } from '../sync.js';
 import { MAP } from '../config.js';
@@ -23,6 +24,7 @@ import { planPage } from './collage.js';
 import { projectToBox, decodePolyline } from './polyline.js';
 import { buildTrack, trimTrack, hasElevation, locatePhotos } from './track.js';
 import { renderBasemap, basemapEnabled } from './maps.js';
+import { weatherKey } from '../weather.js';
 
 const require = createRequire(import.meta.url);
 const fontDir = (pkg) => path.dirname(require.resolve(`@expo-google-fonts/${pkg}/package.json`));
@@ -1175,12 +1177,18 @@ class Book {
     if (a.total_elevation_gain > 0) add('elevation', f.t('elevationShort'), f.elevation(a.total_elevation_gain), `↑${f.elevation(a.total_elevation_gain)}`);
     const sp = f.speedOrPace(a);
     if (sp) add('pace', sp.label, sp.value);
+    if (a.weather) {
+      const temp = f.imperial ? `${Math.round((a.weather.t * 9) / 5 + 32)} °F` : `${Math.round(a.weather.t)} °C`;
+      // Rácsban az égbolt a címke és a hőmérséklet az érték (így elfér a cellában); egysoros formában mindkettő.
+      const sky = f.t(`wx_${weatherKey(a.weather.code)}`);
+      add('weather', sky, temp.replace(/^-0 /, '0 '), `${temp}, ${sky}`);
+    }
     if (a.average_heartrate) add('hr', f.t('statHr'), `${Math.round(a.average_heartrate)} bpm`);
     if (a.device_watts && a.average_watts) add('power', f.t('statPower'), `${Math.round(a.average_watts)} W`);
     if (a.calories) add('calories', f.t('statCalories'), `${f.n0(Math.round(a.calories))} kcal`);
     if (a.elev_high != null && a.total_elevation_gain > 50) add('high', f.t('statHigh'), f.elevation(a.elev_high), `▲${f.elevation(a.elev_high)}`);
     if (a.kudos_count) add('kudos', f.t('statKudos'), f.n0(a.kudos_count), `${f.n0(a.kudos_count)} kudos`);
-    return out.slice(0, 8);
+    return out.slice(0, 9);
   }
 
   /** Adatblokk az elrendezés szerint: magazinban tagolt sáv, galériában és naplóban egyetlen elegáns sor. */
@@ -1199,22 +1207,57 @@ class Book {
     return 9.6 * this.s * 1.25 + 4 * this.s;
   }
 
+  /** QR-kód mérete a cím mellett (a Strava-aktivitásra mutat; a nyomtatott könyvből egy beolvasással elérhető). */
+  qrSize(a) {
+    return this.opts.qr !== false && /^\d{1,20}$/.test(String(a.id)) ? 36 * this.s : 0;
+  }
+
+  /** QR-kód vektorosan, fehér alapon (éjszakai papírtónuson is olvasható), soronként összevont modulokkal. */
+  drawQr(text, x, y, size) {
+    const q = QRCode.create(text, { errorCorrectionLevel: 'M' });
+    const n = q.modules.size;
+    const pad = 2;
+    const cell = size / (n + pad * 2);
+    const d = this.doc;
+    d.save();
+    d.roundedRect(x, y, size, size, cell * 1.5).fill('#FFFFFF');
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (!q.modules.data[r * n + c]) continue;
+        let e = c;
+        while (e + 1 < n && q.modules.data[r * n + e + 1]) e++;
+        d.rect(x + (c + pad) * cell, y + (r + pad) * cell, (e - c + 1) * cell + 0.02, cell + 0.02);
+        c = e;
+      }
+    }
+    d.fill('#1F1D1A').restore();
+  }
+
   titleBlock(a, x, y, W, maxLines = 2) {
     const s = this.s;
-    let h = this.kicker(`${this.f.sport(activityType(a))}   ·   ${this.f.longDate(a)}`, x, y, W) + 7 * s;
-    h += this.text(a.name || this.f.t('untitled'), x, y + h, { font: this.headFont, size: 24 * s, width: W, lines: maxLines, lineGap: -2 }) + 14 * s;
+    const q = this.qrSize(a);
+    const tw = q ? W - q - 10 * s : W;
+    let h = this.kicker(`${this.f.sport(activityType(a))}   ·   ${this.f.longDate(a)}`, x, y, tw) + 7 * s;
+    h += this.text(a.name || this.f.t('untitled'), x, y + h, { font: this.headFont, size: 24 * s, width: tw, lines: maxLines, lineGap: -2 }) + 14 * s;
+    if (q) {
+      this.drawQr(`https://www.strava.com/activities/${a.id}`, x + W - q, y, q);
+      h = Math.max(h, q + 10 * s);
+    }
     return h;
   }
 
   titleBlockHeight(a, W, maxLines = 2) {
     const s = this.s;
     const d = this.doc;
+    const q = this.qrSize(a);
+    const tw = q ? W - q - 10 * s : W;
     d.font(this.headFont).fontSize(24 * s * this.headScale);
     const lh = d.currentLineHeight(true) - 2;
     const name = a.name || this.f.t('untitled');
-    const h = Math.min(d.heightOfString(this.headUpper ? name.toLocaleUpperCase(this.f.locale) : name, { width: W, lineGap: -2 }), lh * maxLines);
+    const h = Math.min(d.heightOfString(this.headUpper ? name.toLocaleUpperCase(this.f.locale) : name, { width: tw, lineGap: -2 }), lh * maxLines);
     d.font('sansSemi').fontSize(7.4 * s);
-    return d.currentLineHeight(true) + 7 * s + h + 14 * s;
+    const total = d.currentLineHeight(true) + 7 * s + h + 14 * s;
+    return q ? Math.max(total, q + 10 * s) : total;
   }
 
   equipmentLine(a, x, y, W) {

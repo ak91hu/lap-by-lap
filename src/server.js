@@ -11,7 +11,7 @@ import { PORT, BASE_URL, STRAVA, SESSION_SECRET, TRUST_PROXY, isConfigured } fro
 import { authorizeUrl, exchangeCode, deauthorize, StravaClient } from './strava.js';
 import { createJob, getJob, publicJob, activeJob } from './jobs.js';
 import { syncActivities, loadActivities, loadAthlete, summarize, prepareEntries, downloadAvatar } from './sync.js';
-import { athleteDir, booksDir, loadTokens, saveTokens, deleteTokens, deleteAllData, listBooks, safeBookPath, writeJson } from './store.js';
+import { athleteDir, booksDir, loadTokens, saveTokens, deleteTokens, deleteAllData, listBooks, safeBookPath, readJson, writeJson } from './store.js';
 import { buildBook, buildCoverSpread, PAGE_SIZES, THEMES, PAPER_CALIPER } from './pdf/book.js';
 import { ImagePrep } from './pdf/images.js';
 import { basemapEnabled } from './pdf/maps.js';
@@ -19,6 +19,7 @@ import { Fmt, activityType, year } from './format.js';
 import { detectLang } from './geo.js';
 import { importArchive, archiveInfo } from './archive.js';
 import { listPhotos, parseRef, photoFile, thumbFile, downloadName, streamZip } from './photos.js';
+import { addWeather, weatherEnabled } from './weather.js';
 import { t, sportName, normLang } from './i18n.js';
 
 const app = express();
@@ -299,6 +300,47 @@ app.post('/api/cover', requireAuth, express.raw({ type: ['image/jpeg', 'image/pn
   res.json({ coverId: id });
 });
 
+// Borító a már letöltött saját fotók közül (feltöltés nélkül): ugyanúgy előkészítve, mint a feltöltött borító.
+app.post('/api/cover/photo', requireAuth, express.json({ limit: '2kb' }), async (req, res) => {
+  const ref = parseRef(req.body?.ref);
+  if (!ref) return res.status(400).json({ error: 'Invalid photo' });
+  const id = `cover-${crypto.randomBytes(8).toString('hex')}.jpg`;
+  const dir = path.join(athleteDir(req.athleteId), 'uploads');
+  await fsp.mkdir(dir, { recursive: true });
+  try {
+    await sharp(photoFile(req.athleteId, ...ref), { failOn: 'none', limitInputPixels: 120e6 }).rotate()
+      .resize({ width: 4000, height: 4000, fit: 'inside', withoutEnlargement: true })
+      .toColourspace('srgb').jpeg({ quality: 92, mozjpeg: true })
+      .toFile(path.join(dir, id));
+  } catch {
+    return res.status(404).json({ error: 'Invalid photo' });
+  }
+  res.json({ coverId: id });
+});
+
+app.get('/api/cover/:id', requireAuth, (req, res) => {
+  if (!/^cover-[a-f0-9]{16}\.jpg$/.test(req.params.id)) return res.status(400).end();
+  res.sendFile(path.join(athleteDir(req.athleteId), 'uploads', req.params.id), { headers: { 'Cache-Control': 'private, max-age=86400' } },
+    (err) => err && !res.headersSent && res.status(404).end());
+});
+
+// ------------------------------------------------------------------ mentett beállítások
+// A felület minden változtatás után elmenti a könyv beállításait, így újratöltés vagy másik eszköz után is megmaradnak.
+
+const settingsFile = (id) => path.join(athleteDir(id), 'settings.json');
+
+app.get('/api/settings', requireAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json((await readJson(settingsFile(req.athleteId))) || {});
+});
+
+app.put('/api/settings', requireAuth, express.json({ limit: '1mb' }), async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return res.status(400).json({ error: 'Invalid settings' });
+  await writeJson(settingsFile(req.athleteId), { ...body, savedAt: new Date().toISOString() });
+  res.json({ ok: true });
+});
+
 function sanitizeOptions(body, req) {
   const o = body || {};
   const str = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -320,7 +362,10 @@ function sanitizeOptions(body, req) {
     routeColor: o.routeColor === 'ink' ? 'ink' : 'accent',
     chapters: ['month', 'season', 'sport', 'none'].includes(o.chapters) ? o.chapters : 'year',
     order: o.order === 'desc' ? 'desc' : 'asc',
-    stats: Array.isArray(o.stats) ? o.stats.filter((k) => ['distance', 'time', 'elevation', 'pace', 'hr', 'power', 'calories', 'high', 'kudos'].includes(k)) : null,
+    stats: Array.isArray(o.stats) ? o.stats.filter((k) => ['distance', 'time', 'elevation', 'pace', 'weather', 'hr', 'power', 'calories', 'high', 'kudos'].includes(k)) : null,
+    excludePhotos: new Set((Array.isArray(o.excludePhotos) ? o.excludePhotos.slice(0, 50000) : []).map(parseRef).filter(Boolean).map((r) => r.join('/'))),
+    weather: bool(o.weather, true) && weatherEnabled(),
+    qr: bool(o.qr, true),
     favorites: Array.isArray(o.favorites) ? o.favorites.map(String).slice(0, 200) : [],
     mapPins: bool(o.mapPins, true),
     runningHeads: bool(o.runningHeads, true),
@@ -401,7 +446,9 @@ app.post('/api/book', requireAuth, express.json({ limit: '2mb' }), async (req, r
       descriptions: opts.showDescriptions,
       streams: opts.showMaps && opts.elevation,
       maxPhotos: opts.maxPhotos,
+      excludePhotos: opts.excludePhotos,
     });
+    if (opts.weather) await addWeather(athleteId, entries, ctx);
     const avatarFile = await downloadAvatar(athlete, athleteId);
     const coverFile = opts.coverId ? path.join(athleteDir(athleteId), 'uploads', opts.coverId) : null;
     const images = new ImagePrep(opts.quality === 'screen' ? { dpi: 150, quality: 78 } : { dpi: 300, quality: 86 });

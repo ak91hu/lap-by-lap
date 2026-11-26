@@ -54,6 +54,13 @@ The name is a bilingual pun: in Hungarian a *lap* is a page, in English it is a 
 
 ## Features
 
+### 🪄 Effortless by default
+
+- **Quick book:** pick a year (or all of them) and click **Create book**. Sensible defaults do the rest; the detailed settings stay folded away under **More settings** until you want them.
+- **Everything is remembered:** every choice (filters, design, stats, favourites, left-out photos, cover) is saved automatically on the server, so a reload or another device picks up exactly where you left off.
+- **Live estimate:** activities, photos and page count update as you change anything.
+- **Notifications:** long jobs show their progress in the browser tab title, and a system notification tells you when the book, sync, archive import or photo download is done while you are elsewhere.
+
 ### ⚡ Minutes, not days
 
 The Strava API allows only about 1,000 requests a day, which can make a photo book of a big history take days. Lap by Lap solves this with the **Strava archive import**: upload the ZIP that Strava emails you, and every activity, description, GPS file and **original full-resolution photo** comes in at once, with **zero API calls per activity**. Even 1,000+ activities are ready in minutes.
@@ -73,6 +80,11 @@ In API-only mode the app respects both the 15-minute and the daily rate limits, 
 - Captions sit under the photos, never on top of them.
 - Justified-row photo layout with smart cropping.
 - Three layouts: **magazine**, **gallery** and **journal**.
+
+### 🌦️ Weather and QR codes on every activity
+
+- **Weather at the start** of each photo activity (temperature and sky, e.g. *4 °C · fog*) from the free [Open-Meteo](https://open-meteo.com/) historical API. Only the start point rounded to about 10 km and the date are sent, results are cached per activity, and indoor/virtual activities are skipped.
+- **QR code next to each activity title** that opens the activity on Strava: scan the printed page to get back to the map, the kudos and the video.
 
 ### 🗓️ Year in review
 
@@ -98,8 +110,8 @@ Table of contents with exact page numbers (two-pass layout), classic running hea
 |---|---|
 | **Look** | 3 layouts · 3 paper tones (white, cream, night) · 4 typefaces (classic, modern, sporty, elegant) · 5 colour themes plus your own club colour · 5 page sizes (A4 portrait/landscape, 21 cm and 30 cm square, A5) |
 | **Structure** | Chapters by year, season, month or sport (or none) · chronological or reverse order · table of contents · year pages · route poster |
-| **Content** | Pick the stats to show (distance, time, elevation, pace, heart rate, power, calories, highest point, kudos) · ★ favourites get the hero treatment · max photos per activity · captions and descriptions on/off · maps and elevation on/off |
-| **Cover** | Your own cover photo or a route-art cover · title position · subtitle |
+| **Content** | Pick the stats to show (distance, time, elevation, pace, weather, heart rate, power, calories, highest point, kudos) · ★ favourites get the hero treatment · max photos per activity · leave single photos out · captions and descriptions on/off · maps and elevation on/off · weather and QR codes on/off |
+| **Cover** | Any of your own Strava photos with one click, an uploaded image, or a route-art cover · title position · subtitle |
 | **Extras** | Dedication, afterword, blank notes pages |
 | **Filters** | Date range, sports, exclude private, commute or indoor/virtual activities, minimum distance, hand-pick single activities |
 
@@ -191,6 +203,8 @@ The side panel shows an estimate before you start. Activities older than your ar
 
 ## Making a book
 
+For most people the **Quick book** card is enough: pick a year and click **Create book**. Open **More settings** for full control:
+
 1. **Select:** pick years or a date range, sports and filters, or hand-pick activities in the list. Star ★ the activities you want highlighted.
 2. **Design:** title, subtitle, page size, layout, paper tone, typeface, theme or club colour, cover photo or route-art cover.
 3. **Content:** stats to show, chapters, order, maps, elevation profiles, descriptions, captions, privacy zone, dedication, afterword, notes pages.
@@ -201,7 +215,10 @@ Every finished book comes with a preflight summary and print tips. Earlier books
 
 ## Downloading your photos
 
-The **Download your photos** card serves exactly the local files the book is made from (`DATA_DIR/athletes/<id>/images/…`). Nothing is fetched again from Strava.
+The **Download your photos** card serves exactly the local files the book is made from (`DATA_DIR/athletes/<id>/images/…`). Nothing is fetched again from Strava. It is also where you curate the book:
+
+- **⊘ Leave out of the book / ↺ put back:** per photo, or for all selected photos at once. Left-out photos are greyed out and skipped when the book is laid out; the estimate updates immediately.
+- **▣ Use as cover:** makes any of your photos the book cover, no upload needed.
 
 - **Download all as ZIP:** one folder per activity, named `YYYY-MM-DD Activity name/01.jpg`, in route/time order. The ZIP is **stored, not compressed** (JPEGs don't compress), and **streamed** to the browser through a normal form POST, so even multi-GB archives use almost no server or browser memory.
 - **Browse and select:** a thumbnail grid grouped by activity. Tick single photos or a whole activity, then **Download selected**. One photo downloads as a single file, several as a ZIP.
@@ -228,6 +245,7 @@ All settings are environment variables, read from `.env` when present.
 | `DEFAULT_LANG` | `en` | Fallback language (`en` or `hu`). |
 | `MAP_TILE_URL` | – | Optional basemap tiles for route maps, e.g. `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png`. Without it, routes are drawn as clean vector maps. Respect the provider's terms. |
 | `MAP_ATTRIBUTION` | `© OpenStreetMap contributors` | Attribution printed with basemap tiles. |
+| `WEATHER` | on | `off` disables the weather lookup (Open-Meteo). |
 
 ## Deployment
 
@@ -317,13 +335,15 @@ Measured with 1,000 activities and 1,386 photos: a **388-page A4 PDF** in **74 s
       thumbs/<activityId>/       360 px thumbnails for the photo browser
       details/  streams/         descriptions, elevation/GPS streams
       uploads/                   your cover photo
+      weather/<activityId>.json  cached weather at the start
+      settings.json              your saved book settings
     books/<athleteId>/*.pdf      finished books and cover spreads
     tiles/                       basemap tile cache (only with MAP_TILE_URL)
   ```
 
 - **Privacy zones** cut 0, 200, 500 or 1,000 m off the start and end of every route on maps.
 - **Delete my data** removes everything stored for you and revokes the app's Strava access.
-- No analytics, no third-party scripts. The only outside calls are Strava, the optional basemap tiles, and the optional IP-country lookup for the UI language.
+- No analytics, no third-party scripts. The only outside calls are Strava, the optional basemap tiles, the optional IP-country lookup for the UI language, and the optional weather lookup (start point rounded to ~10 km plus the date).
 - Strict security headers: CSP, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`. Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` over HTTPS.
 
 ## HTTP API
@@ -339,6 +359,8 @@ The UI is a thin client over these endpoints. All `/api/*` routes except `status
 | `POST /api/sync` | Job: load the activity list from Strava |
 | `POST /api/archive` | Upload a Strava archive ZIP (raw body) and import it as a job |
 | `POST /api/cover` | Upload a cover image (raw body) |
+| `POST /api/cover/photo` · `GET /api/cover/:id` | Use one of your photos as the cover (`{"ref":"<activity>/<photo>"}`) · fetch the prepared cover |
+| `GET /api/settings` · `PUT /api/settings` | Load / save the book settings (JSON) |
 | `POST /api/book` | Job: build a book or a preview with the given options |
 | `GET /api/jobs/:id` · `POST /api/jobs/:id/skip` | Job progress · skip the API wait and use cached data |
 | `GET /api/books` · `GET /api/books/:name` · `DELETE /api/books/:name` | List, download (`?inline` to view), delete books |
@@ -358,6 +380,7 @@ src/
   sync.js         Prioritised, parallel, cached download of activities, photos, details, streams
   archive.js      Strava archive import: CSV, FIT/GPX/TCX, EXIF (GPS + time), streamed ZIP
   photos.js       Photo listing, thumbnails, single and ZIP downloads (yazl, streamed)
+  weather.js      Weather at the activity start (Open-Meteo), cached per activity
   jobs.js         In-memory background jobs with progress
   store.js        File store (atomic writes), tokens, books
   geo.js          IP → country → language
@@ -391,7 +414,7 @@ The UI has no build step: edit `public/*.js` and `public/style.css` and reload. 
 
 The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes and a fictional athlete. Re-render it after layout changes. User books are always made from real Strava data.
 
-**Dependencies:** `express` 5.3, `pdfkit` 0.21, `sharp` 0.35, `@garmin/fitsdk` 21.222, `yauzl` 3.4, `yazl` 3.3, `exif-reader` 2.0, and the Inter, Fraunces, Oswald and Playfair Display fonts.
+**Dependencies:** `express` 5.3, `pdfkit` 0.21, `sharp` 0.35, `@garmin/fitsdk` 21.222, `yauzl` 3.4, `yazl` 3.3, `qrcode` 1.5, `exif-reader` 2.0, and the Inter, Fraunces, Oswald and Playfair Display fonts.
 
 ## Troubleshooting
 

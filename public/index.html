@@ -135,7 +135,20 @@
         </div>
       </section>
 
-      <section class="card step" id="step-select" hidden>
+      <section class="card quick" id="step-quick" hidden>
+        <header class="step-head"><span class="step-no step-icon" aria-hidden="true">⚡</span><h2 data-i18n="quick.title"></h2></header>
+        <p class="muted" data-i18n="quick.lead"></p>
+        <div class="chips" id="quick-years"></div>
+        <div class="row quick-actions">
+          <button type="button" id="quick-build" class="btn btn-primary" data-i18n="quick.build"></button>
+          <button type="button" id="quick-preview" class="btn" data-i18n="quick.preview"></button>
+          <button type="button" id="adv-toggle" class="link" aria-expanded="false" aria-controls="step-select"></button>
+          <span id="save-state" class="save-state small" aria-live="polite"></span>
+        </div>
+        <p class="small muted" id="quick-summary" aria-live="polite"></p>
+      </section>
+
+      <section class="card step adv" id="step-select" hidden>
         <header class="step-head"><span class="step-no">2</span><h2 data-i18n="step.select"></h2></header>
         <div class="field">
           <span class="label" data-i18n="sel.period"></span>
@@ -175,7 +188,7 @@
         </details>
       </section>
 
-      <section class="card step">
+      <section class="card step adv">
         <header class="step-head"><span class="step-no">3</span><h2 data-i18n="step.design"></h2></header>
         <div class="grid2">
           <label class="field"><span class="label" data-i18n="des.title"></span><input name="title" maxlength="80" value="Lap by Lap"></label>
@@ -259,7 +272,7 @@
         </div>
       </section>
 
-      <section class="card step">
+      <section class="card step adv">
         <header class="step-head"><span class="step-no">4</span><h2 data-i18n="step.content"></h2></header>
         <div class="grid2">
           <label class="field compact"><span class="label" data-i18n="con.chapters"></span>
@@ -282,6 +295,8 @@
           <label class="toggle"><input type="checkbox" name="listNoPhoto" checked><span data-i18n="con.log"></span></label>
           <label class="toggle"><input type="checkbox" name="mapPins" checked><span data-i18n="con.pins"></span></label>
           <label class="toggle"><input type="checkbox" name="runningHeads" checked><span data-i18n="con.runningHeads"></span></label>
+          <label class="toggle"><input type="checkbox" name="weather" checked><span data-i18n="con.weather"></span></label>
+          <label class="toggle"><input type="checkbox" name="qr" checked><span data-i18n="con.qr"></span></label>
         </div>
         <p class="muted small" data-i18n="con.apiNote"></p>
         <div class="grid2">
@@ -296,7 +311,7 @@
           <select name="notesPages"><option value="0">0</option><option value="2">2</option><option value="4">4</option><option value="8">8</option></select></label>
       </section>
 
-      <section class="card step">
+      <section class="card step adv">
         <header class="step-head"><span class="step-no">5</span><h2 data-i18n="step.print"></h2></header>
         <div class="field">
           <span class="label" data-i18n="pr.quality"></span>
@@ -326,6 +341,7 @@
         <header class="step-head"><span class="step-no step-icon" aria-hidden="true">↓</span><h2 data-i18n="ph.title"></h2></header>
         <p class="muted" data-i18n="ph.lead"></p>
         <p class="small" id="photos-status"></p>
+        <p class="small muted" id="photos-book-note"></p>
         <div class="row">
           <button type="button" id="photos-zip-all" class="btn" data-i18n="ph.zipAll"></button>
           <button type="button" id="photos-fetch" class="btn" data-i18n="ph.fetch" hidden></button>
@@ -336,6 +352,8 @@
           <div class="picker-tools">
             <button type="button" class="link" id="photos-all" data-i18n="sel.allBtn"></button>
             <button type="button" class="link" id="photos-none" data-i18n="sel.noneBtn"></button>
+            <button type="button" class="link" id="photos-out" data-i18n="ph.outSel" disabled></button>
+            <button type="button" class="link" id="photos-in" data-i18n="ph.inSel" disabled></button>
             <button type="button" class="btn btn-small btn-primary" id="photos-dl-sel" disabled></button>
           </div>
           <div class="photo-groups" id="photo-groups"></div>

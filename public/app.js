@@ -13,13 +13,17 @@ const state = {
   types: new Set(),
   excluded: new Set(),
   favorites: new Set(),
-  stats: new Set(['distance', 'time', 'elevation', 'pace', 'hr', 'power', 'calories', 'high', 'kudos']),
+  stats: new Set(['distance', 'time', 'elevation', 'pace', 'weather', 'hr', 'power', 'calories', 'high', 'kudos']),
   coverId: null,
   coverUrl: null,
   busy: false,
   jobId: null,
   photos: null, // { expected, downloaded, photoActs, groups: [[aktivitás, név, dátum, [[fotó, w, h], …]], …] }
-  photoSel: new Set(), // "aktivitás/fotó"
+  photoSel: new Set(), // "aktivitás/fotó" – letöltéshez kijelölve
+  photoExcl: new Set(), // "aktivitás/fotó" – kimarad a könyvből
+  coverRef: null, // a borító forrásfotója a saját fotók közül
+  advanced: false, // részletes beállítások láthatók
+  settingsReady: false, // a mentett beállítások betöltése után kezdünk menteni
 };
 
 const SIZE_MM = { a4: [210, 297], a4l: [297, 210], sq21: [210, 210], sq30: [300, 300], a5: [148, 210] };
@@ -44,6 +48,7 @@ function applyI18n() {
   renderStaticOptions();
   renderStatChips();
   renderFavCount();
+  renderAdvanced();
   if (window.__flipbook) window.__flipbook.relabel();
 }
 
@@ -113,13 +118,22 @@ async function init() {
     $('#user-name').textContent = [st.athlete?.firstname, st.athlete?.lastname].filter(Boolean).join(' ');
     if (st.athlete?.profile?.startsWith('https://')) $('#user-avatar').src = st.athlete.profile;
     else $('#user-avatar').hidden = true;
+    const saved = await api('/api/settings').catch(() => ({}));
+    applyFormSettings(saved);
+    renderStatChips();
+    renderFavCount();
+    renderAdvanced();
     if (st.summary) {
       renderSummary(st.summary);
       await loadActivities();
+      applyTypeSettings(saved);
+      renderChips();
+      renderPicker();
       await loadPhotos();
     }
     renderArchive();
     renderBooks();
+    state.settingsReady = true;
     if (st.job) resumeJob(st.job);
   }
   document.documentElement.classList.remove('is-loading');
@@ -381,6 +395,7 @@ async function loadActivities() {
   state.acts = await api(`/api/activities?lang=${state.lang}`);
   if (!state.types.size) for (const a of state.acts) state.types.add(a[3]);
   $('#step-select').hidden = !state.acts.length;
+  $('#step-quick').hidden = !state.acts.length;
   renderChips();
   renderPicker();
   updateAll();
@@ -437,6 +452,11 @@ function renderChips() {
   $('#year-chips').replaceChildren(
     chip(tr('sel.all'), !from && !to, () => setRange('', '')),
     ...[...years].sort().map(([y, n]) => chip(y, from === `${y}-01-01` && to === `${y}-12-31`, () => setRange(`${y}-01-01`, `${y}-12-31`), n)),
+  );
+  // Gyors könyv: ugyanaz az évválasztó, a legfrissebb évvel kezdve.
+  $('#quick-years').replaceChildren(
+    chip(tr('sel.all'), !from && !to, () => setRange('', '')),
+    ...[...years].sort().reverse().map(([y, n]) => chip(y, from === `${y}-01-01` && to === `${y}-12-31`, () => setRange(`${y}-01-01`, `${y}-12-31`), n)),
   );
   $('#type-chips').replaceChildren(...[...types].sort((a, b) => b[1].n - a[1].n).map(([type, t]) => chip(t.name, state.types.has(type), () => {
     if (state.types.has(type)) state.types.delete(type);
@@ -499,14 +519,16 @@ $('#picker-list').addEventListener('click', (e) => {
 
 function renderFavCount() {
   $('#fav-count').textContent = state.favorites.size ? tr('sel.favCount', { n: state.favorites.size }) : '';
+  scheduleSave();
 }
 
-const STAT_KEYS = ['distance', 'time', 'elevation', 'pace', 'hr', 'power', 'calories', 'high', 'kudos'];
+const STAT_KEYS = ['distance', 'time', 'elevation', 'pace', 'weather', 'hr', 'power', 'calories', 'high', 'kudos'];
 function renderStatChips() {
   $('#stat-chips').replaceChildren(...STAT_KEYS.map((k) => chip(tr(`stat.${k}`), state.stats.has(k), () => {
     if (state.stats.has(k)) state.stats.delete(k);
     else state.stats.add(k);
     renderStatChips();
+    scheduleSave();
   })));
 }
 
@@ -537,6 +559,7 @@ function updateAll() {
   updateMock();
   updateFacts();
   $('#spread-opts').hidden = !form.elements.coverSpread.checked;
+  scheduleSave();
 }
 
 function updateFacts() {
@@ -545,7 +568,15 @@ function updateFacts() {
   const fd = new FormData(form);
   const withPhotos = sel.filter((a) => a[6]);
   const maxP = Number(fd.get('maxPhotos')) || 0;
-  const photos = withPhotos.reduce((n, a) => n + (maxP ? Math.min(maxP, a[6]) : a[6]), 0);
+  const exclBy = new Map();
+  for (const ref of state.photoExcl) {
+    const act = ref.split('/')[0];
+    exclBy.set(act, (exclBy.get(act) || 0) + 1);
+  }
+  const photos = withPhotos.reduce((n, a) => {
+    const k = Math.max(0, a[6] - (exclBy.get(String(a[0])) || 0));
+    return n + (maxP ? Math.min(maxP, k) : k);
+  }, 0);
   const years = new Set(sel.map((a) => a[2].slice(0, 4))).size;
   let pages = 4 + withPhotos.length + Math.ceil(Math.max(0, photos - withPhotos.length * 3) / 6);
   if (fd.get('yearPages') === 'on') pages += years * 2;
@@ -574,6 +605,9 @@ function updateFacts() {
   $('#eta-tip').hidden = calls <= 200;
   $('#build').disabled = state.busy || !sel.length;
   $('#preview').disabled = state.busy || !sel.length;
+  $('#quick-build').disabled = state.busy || !sel.length;
+  $('#quick-preview').disabled = state.busy || !sel.length;
+  $('#quick-summary').textContent = sel.length ? tr('quick.summary', { a: nf().format(sel.length), p: nf().format(photos), pg: nf().format(pages) }) : '';
 }
 
 function updateMock() {
@@ -632,8 +666,10 @@ $('#cover').addEventListener('change', async (e) => {
   try {
     const { coverId } = await api('/api/cover', { method: 'POST', raw: file, headers: { 'Content-Type': file.type } });
     state.coverId = coverId;
-    if (state.coverUrl) URL.revokeObjectURL(state.coverUrl);
+    state.coverRef = null;
+    if (state.coverUrl?.startsWith('blob:')) URL.revokeObjectURL(state.coverUrl);
     state.coverUrl = URL.createObjectURL(file);
+    markCoverTile();
     $('#cover-clear').hidden = false;
     form.elements.coverStyle.value = 'photo';
     updateAll();
@@ -643,8 +679,10 @@ $('#cover').addEventListener('change', async (e) => {
 });
 $('#cover-clear').addEventListener('click', () => {
   state.coverId = null;
-  if (state.coverUrl) URL.revokeObjectURL(state.coverUrl);
+  state.coverRef = null;
+  if (state.coverUrl?.startsWith('blob:')) URL.revokeObjectURL(state.coverUrl);
   state.coverUrl = null;
+  markCoverTile();
   $('#cover').value = '';
   $('#cover-clear').hidden = true;
   updateAll();
@@ -654,19 +692,43 @@ $('#cover-clear').addEventListener('click', () => {
 
 function setBusy(b) {
   state.busy = b;
-  for (const id of ['#build', '#preview', '#sync', '#photos-fetch']) $(id).disabled = b;
+  for (const id of ['#build', '#preview', '#sync', '#photos-fetch', '#quick-build', '#quick-preview']) $(id).disabled = b;
+  // Hosszú munkánál értesítést kérünk (csak felhasználói kattintásra, egyszer).
+  if (b && 'Notification' in window && Notification.permission === 'default' && navigator.userActivation?.isActive) {
+    Notification.requestPermission().catch(() => {});
+  }
   if (!b) updateFacts();
 }
 
 async function runJob(jobId, onUpdate) {
   state.jobId = jobId;
-  for (;;) {
-    const j = await api(`/api/jobs/${jobId}`);
-    onUpdate?.(j);
-    if (j.status === 'done') return j;
-    if (j.status === 'error') throw new Error(j.error);
-    await new Promise((r) => setTimeout(r, j.waitUntil ? 2000 : 800));
+  try {
+    for (;;) {
+      const j = await api(`/api/jobs/${jobId}`);
+      onUpdate?.(j);
+      // Az előrehaladás a böngészőfülön is látszik, ha közben máshol vagy.
+      document.title = `${j.total ? `${Math.round((j.done / j.total) * 100)}%` : '…'} · ${tr('meta.title')}`;
+      if (j.status === 'done') {
+        notifyDone(j.kind, false);
+        return j;
+      }
+      if (j.status === 'error') {
+        notifyDone(j.kind, true);
+        throw new Error(j.error);
+      }
+      await new Promise((r) => setTimeout(r, j.waitUntil ? 2000 : 800));
+    }
+  } finally {
+    document.title = tr('meta.title');
   }
+}
+
+/** Rendszerértesítés a kész munkáról, ha a lap épp nincs előtérben (és a felhasználó engedélyezte). */
+function notifyDone(kind, error) {
+  if (!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    new Notification('Lap by Lap', { body: tr(error ? 'notify.error' : `notify.${kind}`), icon: '/favicon.svg', tag: 'lap-by-lap' });
+  } catch { /* egyes mobilböngészők csak service workerből engedik */ }
 }
 
 function countdown(until) {
@@ -729,6 +791,9 @@ function collectOptions(preview) {
     order: fd.get('order'),
     stats: [...state.stats],
     favorites: [...state.favorites],
+    excludePhotos: [...state.photoExcl],
+    weather: on('weather'),
+    qr: on('qr'),
     mapPins: on('mapPins'),
     runningHeads: on('runningHeads'),
     routeColor: fd.get('routeColor'),
@@ -874,6 +939,7 @@ function renderPhotoStatus() {
     ? tr('ph.status', { d: nf().format(p.downloaded), e: nf().format(Math.max(p.expected, p.downloaded)) })
     : tr('ph.none');
   $('#photos-zip-all').disabled = !p.downloaded;
+  renderBookNote();
   $('#photos-fetch').hidden = !(p.expected > p.downloaded);
   $('#photos-fetch').disabled = state.busy;
   $('#photo-browser').hidden = !p.downloaded;
@@ -886,6 +952,8 @@ function renderPhotoSel() {
   const btn = $('#photos-dl-sel');
   btn.textContent = tr('ph.dlSel', { n: nf().format(n) });
   btn.disabled = !n;
+  $('#photos-out').disabled = !n;
+  $('#photos-in').disabled = !n;
   for (const head of $$('#photo-groups .ph-head input')) {
     const refs = $$('.ph-tile input', head.closest('.ph-group')).map((c) => c.dataset.ref);
     const k = refs.filter((r) => state.photoSel.has(r)).length;
@@ -910,16 +978,89 @@ function renderPhotoGroups() {
       const cb = el('input', { type: 'checkbox', checked: state.photoSel.has(ref) });
       cb.dataset.ref = ref;
       cb.setAttribute('aria-label', `${name || act} · ${i + 1}`);
-      const dl = el('a', { className: 'ph-dl', href: photoUrl(ref, '?download'), textContent: '↓', title: tr('ph.dlOne') });
+      const dl = el('a', { className: 'ph-act', href: photoUrl(ref, '?download'), textContent: '↓', title: tr('ph.dlOne') });
       dl.setAttribute('download', '');
       dl.setAttribute('aria-label', tr('ph.dlOne'));
-      grid.append(el('label', { className: 'ph-tile' }, cb, el('img', { src: photoUrl(ref, '?thumb'), alt: '', loading: 'lazy', decoding: 'async' }), dl));
+      const ex = el('button', { type: 'button', className: 'ph-act ph-ex' });
+      const cv = el('button', { type: 'button', className: 'ph-act ph-cv', textContent: '▣', title: tr('ph.cover') });
+      cv.setAttribute('aria-label', tr('ph.cover'));
+      ex.dataset.ref = ref;
+      cv.dataset.ref = ref;
+      const tile = el('label', { className: 'ph-tile' }, cb, el('img', { src: photoUrl(ref, '?thumb'), alt: '', loading: 'lazy', decoding: 'async' }),
+        el('span', { className: 'ph-badge' }), el('span', { className: 'ph-actions' }, dl, ex, cv));
+      tile.dataset.ref = ref;
+      paintTile(tile);
+      grid.append(tile);
     });
     frag.append(el('div', { className: 'ph-group' }, head, grid));
   }
   $('#photo-groups').replaceChildren(frag);
   renderPhotoSel();
 }
+
+/** Egy csempe állapota: kimarad-e a könyvből, ez-e a borító. */
+function paintTile(tile) {
+  const ref = tile.dataset.ref;
+  const out = state.photoExcl.has(ref);
+  const cover = state.coverRef === ref;
+  tile.classList.toggle('out', out);
+  tile.classList.toggle('is-cover', cover);
+  $('.ph-badge', tile).textContent = cover ? tr('ph.isCover') : out ? tr('ph.outBadge') : '';
+  const ex = $('.ph-ex', tile);
+  ex.textContent = out ? '↺' : '⊘';
+  ex.title = tr(out ? 'ph.in' : 'ph.out');
+  ex.setAttribute('aria-label', ex.title);
+  ex.setAttribute('aria-pressed', String(out));
+}
+
+function markCoverTile() {
+  for (const t of $$('#photo-groups .ph-tile')) paintTile(t);
+}
+
+function renderBookNote() {
+  $('#photos-book-note').textContent = state.photoExcl.size ? tr('ph.bookNote', { n: nf().format(state.photoExcl.size) }) : '';
+}
+
+function setPhotosOut(refs, out) {
+  for (const ref of refs) {
+    if (out) state.photoExcl.add(ref);
+    else state.photoExcl.delete(ref);
+  }
+  const set = new Set(refs);
+  for (const t of $$('#photo-groups .ph-tile')) if (set.has(t.dataset.ref)) paintTile(t);
+  renderBookNote();
+  updateAll(); // becslés frissítése + mentés
+}
+
+async function setCoverFromPhoto(ref) {
+  try {
+    const { coverId } = await api('/api/cover/photo', { method: 'POST', body: { ref } });
+    if (state.coverUrl?.startsWith('blob:')) URL.revokeObjectURL(state.coverUrl);
+    state.coverId = coverId;
+    state.coverRef = ref;
+    state.coverUrl = `/api/cover/${coverId}`;
+    $('#cover-clear').hidden = false;
+    form.elements.coverStyle.value = 'photo';
+    markCoverTile();
+    $('#photos-book-note').textContent = tr('ph.coverSet');
+    setTimeout(renderBookNote, 2500);
+    updateAll();
+  } catch (e) {
+    showAlert(e.message);
+  }
+}
+
+// Csempe-gombok (kihagyás, borító); a letöltés sima link.
+$('#photo-groups').addEventListener('click', (e) => {
+  const b = e.target.closest('button.ph-act');
+  if (!b) return;
+  e.preventDefault();
+  const ref = b.dataset.ref;
+  if (b.classList.contains('ph-ex')) setPhotosOut([ref], !state.photoExcl.has(ref));
+  else if (b.classList.contains('ph-cv')) setCoverFromPhoto(ref);
+});
+$('#photos-out').addEventListener('click', () => setPhotosOut([...state.photoSel], true));
+$('#photos-in').addEventListener('click', () => setPhotosOut([...state.photoSel], false));
 
 $('#photo-browser').addEventListener('toggle', renderPhotoGroups);
 $('#photo-groups').addEventListener('change', (e) => {
@@ -989,6 +1130,93 @@ $('#photos-fetch').addEventListener('click', async () => {
     setBusy(false);
   }
 });
+
+
+// ------------------------------------------------------------------ gyors mód + automatikusan mentett beállítások
+
+function renderAdvanced() {
+  document.body.classList.toggle('simple', !state.advanced);
+  const b = $('#adv-toggle');
+  if (!b) return;
+  b.textContent = tr(state.advanced ? 'quick.less' : 'quick.more');
+  b.setAttribute('aria-expanded', String(state.advanced));
+}
+$('#adv-toggle').addEventListener('click', () => {
+  state.advanced = !state.advanced;
+  renderAdvanced();
+  scheduleSave();
+  if (state.advanced) $('#step-select').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+$('#quick-build').addEventListener('click', () => build(false));
+$('#quick-preview').addEventListener('click', () => build(true));
+
+const SETTINGS_SKIP = new Set(['lang']);
+
+function collectSettings() {
+  const values = {};
+  for (const e of form.elements) {
+    if (!e.name || SETTINGS_SKIP.has(e.name) || e.type === 'file' || e.closest('#step-photos')) continue;
+    if (e.type === 'checkbox') values[e.name] = e.checked;
+    else if (e.type === 'radio') {
+      if (e.checked) values[e.name] = e.value;
+    } else values[e.name] = e.value;
+  }
+  const allTypes = new Set(state.acts.map((a) => a[3]));
+  return {
+    v: 1,
+    form: values,
+    typesOff: [...allTypes].filter((t) => !state.types.has(t)),
+    excluded: [...state.excluded],
+    favorites: [...state.favorites],
+    stats: [...state.stats],
+    photoExcl: [...state.photoExcl],
+    coverId: state.coverId,
+    coverRef: state.coverRef,
+    advanced: state.advanced,
+  };
+}
+
+function applyFormSettings(saved) {
+  const v = saved?.form || {};
+  for (const e of form.elements) {
+    if (!e.name || !(e.name in v) || SETTINGS_SKIP.has(e.name) || e.type === 'file') continue;
+    if (e.type === 'checkbox') e.checked = Boolean(v[e.name]);
+    else if (e.type === 'radio') e.checked = e.value === v[e.name];
+    else e.value = v[e.name];
+  }
+  const set = (k) => (Array.isArray(saved?.[k]) ? new Set(saved[k].map(String)) : null);
+  state.excluded = set('excluded') || state.excluded;
+  state.favorites = set('favorites') || state.favorites;
+  state.stats = set('stats') || state.stats;
+  state.photoExcl = set('photoExcl') || state.photoExcl;
+  if (/^cover-[a-f0-9]{16}\.jpg$/.test(saved?.coverId || '')) {
+    state.coverId = saved.coverId;
+    state.coverRef = saved.coverRef || null;
+    state.coverUrl = `/api/cover/${saved.coverId}`;
+    $('#cover-clear').hidden = false;
+  }
+  state.advanced = Boolean(saved?.advanced);
+}
+
+function applyTypeSettings(saved) {
+  if (Array.isArray(saved?.typesOff)) for (const t of saved.typesOff) state.types.delete(t);
+}
+
+let saveTimer;
+function scheduleSave() {
+  if (!state.settingsReady) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await api('/api/settings', { method: 'PUT', body: collectSettings() });
+      const flag = $('#save-state');
+      flag.textContent = tr('quick.saved');
+      flag.classList.add('on');
+      clearTimeout(flag._t);
+      flag._t = setTimeout(() => flag.classList.remove('on'), 1800);
+    } catch { /* a következő változtatásnál újra próbáljuk */ }
+  }, 700);
+}
 
 // ------------------------------------------------------------------ korábbi könyvek
 

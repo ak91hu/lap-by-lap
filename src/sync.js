@@ -201,7 +201,7 @@ export async function loadStreams(file) {
  * @returns {Promise<{entries: Array<{activity, photos, streamsFile}>, failedPhotos: number, skipped: boolean}>}
  */
 export async function prepareEntries(client, athleteId, activities, ctx, opts = {}) {
-  const { descriptions = true, streams = true, maxPhotos = 0 } = opts;
+  const { descriptions = true, streams = true, maxPhotos = 0, excludePhotos = null } = opts;
   const dir = athleteDir(athleteId);
   let skipped = false;
   // API-hívás: ha a felhasználó a „most készítsd el” gombot választja, a hiányzó adat kimarad.
@@ -324,6 +324,7 @@ export async function prepareEntries(client, athleteId, activities, ctx, opts = 
       for (const p of list.items) {
         const m = index[p.id];
         if (!m) continue;
+        if (excludePhotos?.has(`${a.id}/${p.id}`)) continue; // a felhasználó kivette a könyvből
         photos.push({
           file: path.join(dir, 'images', String(a.id), `${p.id}.jpg`),
           width: m.w, height: m.h, caption: p.caption, isVideo: p.isVideo,
