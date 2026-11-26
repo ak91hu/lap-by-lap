@@ -95,7 +95,7 @@ Az alkalmazásnak **tartós lemez** kell (tokenek, gyorsítótár, könyvek), **
 |---|---|---|
 | **Saját gép** (`npm start`) | 0 Ft | Saját használatra. Ez a legjobb adatvédelmi szempontból. |
 | **Oracle Cloud Always Free** – Ampere A1 VM (ARM) | 0 Ft (bankkártyás azonosítás kell) | **Ajánlott**, ha mindig elérhető, nyilvános címre van szükség. 2 OCPU / 12 GB RAM és tartós blokktároló, nem alszik el. Népszerű régiókban gyakran nincs szabad A1-kapacitás. |
-| **Northflank Sandbox** (Docker + GitHub Actions, automatikus deploy) | 0 Ft | **Ezt használjuk.** Mindig fut, nem alszik el, és tartós volume-ot ad a `/data` mappának, így a tokenek, fotók és könyvek megmaradnak. |
+| **Northflank Sandbox** (Dockerfile, automatikus build és deploy) | 0 Ft | **Ezt használjuk:** <https://p01--lap-by-lap--dmg6gnvmmd7s.code.run>. Mindig fut, nem alszik el, és 6 GB-os tartós volume-ot ad a `/data` mappának, így a tokenek, a fotók és a könyvek megmaradnak. Az ingyenes keretbe a 0,2 vCPU / 512 MB-os gép fér bele, ezért a nagy könyvek tördelése lassabb. |
 | Render / Koyeb ingyenes csomag | 0 Ft | Nem ajánlott: a lemez ideiglenes (újraindításkor minden adat elvész), tétlenség után elalszik, és csak 512 MB RAM-ot ad. |
 
 **Szerveres beállítás** (pl. Oracle VM, Caddy reverse proxyval ugyanazon a gépen, saját domainnel vagy ingyenes aldomainnel, pl. DuckDNS):
@@ -120,10 +120,11 @@ A Strava API-beállításoknál az *Authorization Callback Domain* legyen a szer
 
 #### Northflank (automatikus deploy a GitHubról)
 
-- A `Dockerfile` adja az image-et, a `.github/workflows/deploy.yml` pedig minden `main` ágra érkező push után megépíti, feltölti a GitHub Container Registrybe (`ghcr.io/ak91hu/lap-by-lap`), és a Northflank API-n keresztül kitelepíti.
-- A Northflank-szolgáltatás egy tartós volume-ot csatol a `/data` mappára (`DATA_DIR=/data`).
-- **Titkos adatok:** a `STRAVA_CLIENT_ID`, a `STRAVA_CLIENT_SECRET` és a `SESSION_SECRET` a Northflank-szolgáltatás futtatási környezeti változói közé kerül. A Northflank API-token a GitHub-repó *Actions secretjei* közé kerül (`NORTHFLANK_TOKEN`), a projekt- és szolgáltatásazonosító pedig repóváltozó (`NORTHFLANK_PROJECT`, `NORTHFLANK_SERVICE`). Egyik sem kerül a repóba.
-- A `BASE_URL` a szolgáltatás nyilvános címe (`https://…code.run`), a `TRUST_PROXY` értéke `true`. A Strava API-beállításoknál az *Authorization Callback Domain* ennek a címnek a domainje. A `localhost` mindig engedélyezett, így a helyi fejlesztés is működik.
+- A Northflank a nyilvános GitHub-repóból maga építi az image-et a `Dockerfile` alapján, és minden `main` ágra érkező push után újratelepíti az appot.
+- A szolgáltatás (`lap-by-lap`, `nf-compute-20` gépméret) egy 6 GB-os tartós volume-ot csatol a `/data` mappára (`DATA_DIR=/data`).
+- **Titkos adatok:** a `STRAVA_CLIENT_ID`, a `STRAVA_CLIENT_SECRET` és a `SESSION_SECRET` a Northflank-szolgáltatás futtatási környezeti változói közé kerül, a repóba soha.
+- A `BASE_URL` a szolgáltatás nyilvános címe (<https://p01--lap-by-lap--dmg6gnvmmd7s.code.run>), a `TRUST_PROXY` értéke `true`. A Strava API-beállításoknál az *Authorization Callback Domain* ennek a címnek a domainje. A `localhost` mindig engedélyezett, így a helyi fejlesztés is működik.
+- Újrabeállítás vagy új környezet: `npm i -g @northflank/cli`, `northflank login -n lap-by-lap` (böngészős jóváhagyás), majd `node tools/northflank-setup.mjs`.
 
 > **Strava-korlát:** az új API-alkalmazások *Single Player* módban indulnak, ilyenkor csak a saját fiókod csatlakozhat. Az API-beállításokban önállóan bővítheted 10 sportolóig. Ennél többhöz a Strava *Extended Access* felülvizsgálata kell, ami hetekig is tarthat.
 
@@ -197,12 +198,12 @@ The app needs a **persistent disk** (tokens, cache, books), **~0.5–1 GB RAM** 
 |---|---|---|
 | **Your own machine** (`npm start`) | free | Personal use. Best for privacy. |
 | **Oracle Cloud Always Free**: Ampere A1 VM (ARM) | free (card needed for verification) | **Recommended** when you need an always-on public URL. 2 OCPU / 12 GB RAM, persistent block storage, never sleeps. A1 capacity is often unavailable in popular regions. |
-| **Northflank Sandbox** (Docker + GitHub Actions, auto-deploy) | free | **What we use.** Always on, never sleeps, with a persistent volume for `/data`, so tokens, photos and books survive restarts and deploys. |
+| **Northflank Sandbox** (Dockerfile, automatic build and deploy) | free | **What we use:** <https://p01--lap-by-lap--dmg6gnvmmd7s.code.run>. Always on, never sleeps, with a 6 GB persistent volume for `/data`, so tokens, photos and books survive restarts and deploys. The free allowance fits a 0.2 vCPU / 512 MB instance, so large books lay out more slowly. |
 | Render / Koyeb free tier | free | Not recommended: ephemeral disk (all data is lost on restart), sleeps when idle, only 512 MB RAM. |
 
 On a server, set `BASE_URL=https://your.domain`, a fixed `SESSION_SECRET`, `TRUST_PROXY=loopback` (with Caddy or nginx on the same host) and a `DATA_DIR` on persistent storage. Set the Strava *Authorization Callback Domain* to your domain. The Caddyfile in the Hungarian section above works as is. New Strava API apps start in *Single Player* mode (only you can connect). You can self-upgrade to 10 athletes in the API settings; more needs Strava's *Extended Access* review.
 
-**Northflank (auto-deploy from GitHub).** The `Dockerfile` builds the image, and `.github/workflows/deploy.yml` pushes it to GHCR (`ghcr.io/ak91hu/lap-by-lap`) and rolls it out through the Northflank API on every push to `main`. A persistent volume is mounted at `/data`. Secrets live outside the repo: the Strava keys and `SESSION_SECRET` are runtime variables of the Northflank service, and the Northflank API token is the `NORTHFLANK_TOKEN` GitHub Actions secret (with the `NORTHFLANK_PROJECT` / `NORTHFLANK_SERVICE` repo variables). `BASE_URL` is the service's public `https://…code.run` URL and `TRUST_PROXY=true`. Set the Strava *Authorization Callback Domain* to that domain; `localhost` always stays allowed.
+**Northflank (auto-deploy from GitHub).** Northflank builds the image from the public repo with the `Dockerfile` and redeploys on every push to `main`. The `lap-by-lap` service (`nf-compute-20`) mounts a 6 GB persistent volume at `/data`. Secrets live only in the service's runtime variables (`STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `SESSION_SECRET`), never in the repo. `BASE_URL` is <https://p01--lap-by-lap--dmg6gnvmmd7s.code.run> and `TRUST_PROXY=true`. Set the Strava *Authorization Callback Domain* to that domain; `localhost` always stays allowed. To set it up again: `npm i -g @northflank/cli`, `northflank login -n lap-by-lap` (browser approval), then `node tools/northflank-setup.mjs`.
 
 ### Requirements
 
