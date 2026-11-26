@@ -338,6 +338,14 @@ test('archívum feltöltése és importja; méretkorlát; hibás ZIP', async () 
   assert.match(bj.error, /archive|ZIP/i);
 });
 
+test('kívülről törölt adatmappa: a munkamenet azonnal megszűnik (nem marad a memóriában)', async () => {
+  await seedAthlete(DATA, { id: 890, count: 2, photoEvery: 9 });
+  const c = as(890);
+  assert.equal((await c.get('/api/activities')).status, 200);
+  fs.rmSync(path.join(DATA, 'athletes', '890'), { recursive: true, force: true });
+  assert.equal((await c.get('/api/activities')).status, 401);
+});
+
 // ---------------------------------------------------------------- kijelentkezés, törlés
 
 test('kijelentkezés törli a sütit; adattörlés visszavonja a Strava-hozzáférést', async () => {

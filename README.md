@@ -481,7 +481,7 @@ The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes an
 
 ## Tests
 
-`npm test` runs 84 tests with Node's built-in test runner. No extra test framework is needed; PDFs are checked with the `mupdf` dev dependency. All tests use **fictional athletes in temporary folders**, a **mock Strava server** (OAuth, API v3, photo CDN) and a **mock S3 server**. They never touch your `data/` folder, never read your `.env` (`LAPBYLAP_NO_DOTENV=1`) and never call the real Strava API (`STRAVA_API_URL` / `STRAVA_OAUTH_URL` point to the mock or to an unreachable local address; these two variables exist only for tests).
+`npm test` runs 85 tests with Node's built-in test runner. No extra test framework is needed; PDFs are checked with the `mupdf` dev dependency. All tests use **fictional athletes in temporary folders**, a **mock Strava server** (OAuth, API v3, photo CDN) and a **mock S3 server**. They never touch your `data/` folder, never read your `.env` (`LAPBYLAP_NO_DOTENV=1`) and never call the real Strava API (`STRAVA_API_URL` / `STRAVA_OAUTH_URL` point to the mock or to an unreachable local address; these two variables exist only for tests).
 
 | Suite | What it covers |
 |---|---|

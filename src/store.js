@@ -39,8 +39,15 @@ export async function exists(file) {
 const tokenCache = new Map();
 
 export async function loadTokens(id) {
-  if (tokenCache.has(id)) return tokenCache.get(id);
-  const t = await readJson(path.join(athleteDir(id), 'tokens.json'));
+  const file = path.join(athleteDir(id), 'tokens.json');
+  // A memóriabeli példány csak addig érvényes, amíg a fájl létezik: ha az adatokat kívülről törlik
+  // (pl. üzemeltetői takarítás), a munkamenet azonnal megszűnik, nem csak újraindításkor.
+  if (tokenCache.has(id)) {
+    if (await exists(file)) return tokenCache.get(id);
+    tokenCache.delete(id);
+    return null;
+  }
+  const t = await readJson(file);
   if (t) tokenCache.set(id, t);
   return t;
 }
