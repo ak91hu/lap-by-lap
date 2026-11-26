@@ -90,7 +90,15 @@ app.use((req, res, next) => {
 
 // A ponttal kezdődő mappát külön kell kiszolgálni: az express.static alapból kihagyja a rejtett útvonalakat.
 app.use('/.well-known', express.static(path.resolve('public/.well-known'), { maxAge: '1h' }));
-app.use(express.static(path.resolve('public'), { maxAge: '1h', index: 'index.html' }));
+// A felület fájljai (HTML/JS/CSS) minden betöltéskor újraellenőrzöttek (ETag → 304), így deploy után a böngésző
+// sosem keveri a régi és az új verziót. A ritkán változó médiát (mintakönyv-oldalak, ikon) egy óráig tárolhatja.
+app.use(express.static(path.resolve('public'), {
+  maxAge: '1h',
+  index: 'index.html',
+  setHeaders(res, file) {
+    if (/\.(html|js|mjs|css|json)$/i.test(file)) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 const requireCjs = createRequire(import.meta.url);
 for (const pkg of ['inter', 'fraunces', 'oswald', 'playfair-display']) {
   const dir = path.dirname(requireCjs.resolve(`@expo-google-fonts/${pkg}/package.json`));
