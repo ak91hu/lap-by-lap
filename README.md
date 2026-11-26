@@ -85,7 +85,7 @@ API-módban az alkalmazás kezeli a 15 perces és a napi keretet, és automatiku
 | `DATA_DIR` | Gyorsítótár és könyvek helye (`data/`). |
 | `GEOIP=off`, `GEOIP_URL`, `DEFAULT_LANG` | IP-alapú nyelvválasztás. Helyi futtatásnál a gép nyilvános IP-jének országát kérdezi le (`api.country.is`), a választ 24 óráig gyorsítótárazza. |
 | `MAP_TILE_URL`, `MAP_ATTRIBUTION` | Opcionális térképháttér-csempék (tartsd be a szolgáltató feltételeit). Nélküle letisztult vektoros útvonalrajz készül. |
-| `TRUST_PROXY` | Reverse proxy mögötti futtatáshoz (`loopback`, `true`, ugrásszám vagy címlista). Renderen magától `true`. |
+| `TRUST_PROXY` | Reverse proxy mögötti futtatáshoz (`loopback`, `true`, ugrásszám vagy címlista). Renderen magától `true`, Northflankon `true`-ra állítva. |
 
 ### Üzemeltetés (ingyenes lehetőségek)
 
@@ -95,7 +95,8 @@ Az alkalmazásnak **tartós lemez** kell (tokenek, gyorsítótár, könyvek), **
 |---|---|---|
 | **Saját gép** (`npm start`) | 0 Ft | Saját használatra. Ez a legjobb adatvédelmi szempontból. |
 | **Oracle Cloud Always Free** – Ampere A1 VM (ARM) | 0 Ft (bankkártyás azonosítás kell) | **Ajánlott**, ha mindig elérhető, nyilvános címre van szükség. 2 OCPU / 12 GB RAM és tartós blokktároló, nem alszik el. Népszerű régiókban gyakran nincs szabad A1-kapacitás. |
-| **Render ingyenes csomag** (`render.yaml`, automatikus deploy) | 0 Ft | Bemutatóhoz, kipróbáláshoz. Korlátok: a lemez ideiglenes (újraindításkor, deploykor és elalváskor a letöltött adatok és a bejelentkezés elvesznek), 15 perc tétlenség után elalszik (megszakad a hosszú letöltés), és 512 MB RAM-ot ad. |
+| **Northflank Sandbox** (Docker + GitHub Actions, automatikus deploy) | 0 Ft | **Ezt használjuk.** Mindig fut, nem alszik el, és tartós volume-ot ad a `/data` mappának, így a tokenek, fotók és könyvek megmaradnak. |
+| Render / Koyeb ingyenes csomag | 0 Ft | Nem ajánlott: a lemez ideiglenes (újraindításkor minden adat elvész), tétlenség után elalszik, és csak 512 MB RAM-ot ad. |
 
 **Szerveres beállítás** (pl. Oracle VM, Caddy reverse proxyval ugyanazon a gépen, saját domainnel vagy ingyenes aldomainnel, pl. DuckDNS):
 
@@ -117,13 +118,12 @@ lapbylap.example.com {
 
 A Strava API-beállításoknál az *Authorization Callback Domain* legyen a szerver domainje (pl. `lapbylap.example.com`). A sharp az ARM64 Linuxot is támogatja, így nincs szükség külön buildre.
 
-#### Render (automatikus deploy a GitHubról)
+#### Northflank (automatikus deploy a GitHubról)
 
-A repó gyökerében lévő `render.yaml` (Blueprint) leírja a szolgáltatást, és minden `main` ágra érkező push után automatikusan új deployt indít.
-
-1. A Render felületén: **New → Blueprint**, majd válaszd ki a GitHub-repót.
-2. A Render elkéri a titkos értékeket: `STRAVA_CLIENT_ID` és `STRAVA_CLIENT_SECRET` (ezek **soha nem kerülnek a repóba**). A `SESSION_SECRET`-et a Render generálja, a `BASE_URL`-t pedig az alkalmazás a `RENDER_EXTERNAL_URL`-ből veszi.
-3. A Strava API-beállításoknál az *Authorization Callback Domain* legyen a Render-domain (pl. `lap-by-lap.onrender.com`). A `localhost` mindig engedélyezett, így a helyi fejlesztés is működik tovább.
+- A `Dockerfile` adja az image-et, a `.github/workflows/deploy.yml` pedig minden `main` ágra érkező push után megépíti, feltölti a GitHub Container Registrybe (`ghcr.io/ak91hu/lap-by-lap`), és a Northflank API-n keresztül kitelepíti.
+- A Northflank-szolgáltatás egy tartós volume-ot csatol a `/data` mappára (`DATA_DIR=/data`).
+- **Titkos adatok:** a `STRAVA_CLIENT_ID`, a `STRAVA_CLIENT_SECRET` és a `SESSION_SECRET` a Northflank-szolgáltatás futtatási környezeti változói közé kerül. A Northflank API-token a GitHub-repó *Actions secretjei* közé kerül (`NORTHFLANK_TOKEN`), a projekt- és szolgáltatásazonosító pedig repóváltozó (`NORTHFLANK_PROJECT`, `NORTHFLANK_SERVICE`). Egyik sem kerül a repóba.
+- A `BASE_URL` a szolgáltatás nyilvános címe (`https://…code.run`), a `TRUST_PROXY` értéke `true`. A Strava API-beállításoknál az *Authorization Callback Domain* ennek a címnek a domainje. A `localhost` mindig engedélyezett, így a helyi fejlesztés is működik.
 
 > **Strava-korlát:** az új API-alkalmazások *Single Player* módban indulnak, ilyenkor csak a saját fiókod csatlakozhat. Az API-beállításokban önállóan bővítheted 10 sportolóig. Ennél többhöz a Strava *Extended Access* felülvizsgálata kell, ami hetekig is tarthat.
 
@@ -197,11 +197,12 @@ The app needs a **persistent disk** (tokens, cache, books), **~0.5–1 GB RAM** 
 |---|---|---|
 | **Your own machine** (`npm start`) | free | Personal use. Best for privacy. |
 | **Oracle Cloud Always Free**: Ampere A1 VM (ARM) | free (card needed for verification) | **Recommended** when you need an always-on public URL. 2 OCPU / 12 GB RAM, persistent block storage, never sleeps. A1 capacity is often unavailable in popular regions. |
-| **Render free tier** (`render.yaml`, auto-deploy) | free | Demos and trying it out. Limits: the disk is ephemeral (downloaded data and sign-ins are lost on every restart, deploy and spin-down), it sleeps after 15 min idle (which kills long syncs), and you get 512 MB RAM. |
+| **Northflank Sandbox** (Docker + GitHub Actions, auto-deploy) | free | **What we use.** Always on, never sleeps, with a persistent volume for `/data`, so tokens, photos and books survive restarts and deploys. |
+| Render / Koyeb free tier | free | Not recommended: ephemeral disk (all data is lost on restart), sleeps when idle, only 512 MB RAM. |
 
 On a server, set `BASE_URL=https://your.domain`, a fixed `SESSION_SECRET`, `TRUST_PROXY=loopback` (with Caddy or nginx on the same host) and a `DATA_DIR` on persistent storage. Set the Strava *Authorization Callback Domain* to your domain. The Caddyfile in the Hungarian section above works as is. New Strava API apps start in *Single Player* mode (only you can connect). You can self-upgrade to 10 athletes in the API settings; more needs Strava's *Extended Access* review.
 
-**Render (auto-deploy from GitHub).** The `render.yaml` Blueprint in the repo root defines the service and deploys every push to `main`. In Render choose **New → Blueprint** and pick the repo. Render asks for `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` (never committed), generates `SESSION_SECRET`, and the app takes `BASE_URL` from `RENDER_EXTERNAL_URL`. Set the Strava *Authorization Callback Domain* to your `*.onrender.com` domain; `localhost` always stays allowed for local development.
+**Northflank (auto-deploy from GitHub).** The `Dockerfile` builds the image, and `.github/workflows/deploy.yml` pushes it to GHCR (`ghcr.io/ak91hu/lap-by-lap`) and rolls it out through the Northflank API on every push to `main`. A persistent volume is mounted at `/data`. Secrets live outside the repo: the Strava keys and `SESSION_SECRET` are runtime variables of the Northflank service, and the Northflank API token is the `NORTHFLANK_TOKEN` GitHub Actions secret (with the `NORTHFLANK_PROJECT` / `NORTHFLANK_SERVICE` repo variables). `BASE_URL` is the service's public `https://…code.run` URL and `TRUST_PROXY=true`. Set the Strava *Authorization Callback Domain* to that domain; `localhost` always stays allowed.
 
 ### Requirements
 
