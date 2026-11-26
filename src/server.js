@@ -87,6 +87,8 @@ app.use((req, res, next) => {
 
 // ------------------------------------------------------------------ statikus fájlok
 
+// A ponttal kezdődő mappát külön kell kiszolgálni: az express.static alapból kihagyja a rejtett útvonalakat.
+app.use('/.well-known', express.static(path.resolve('public/.well-known'), { maxAge: '1h' }));
 app.use(express.static(path.resolve('public'), { maxAge: '1h', index: 'index.html' }));
 const requireCjs = createRequire(import.meta.url);
 for (const pkg of ['inter', 'fraunces', 'oswald', 'playfair-display']) {
