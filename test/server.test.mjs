@@ -102,7 +102,7 @@ test('védett végpontok bejelentkezés nélkül 401-et adnak', async () => {
 test('hamisított vagy idegen titokkal aláírt süti nem ad hozzáférést', async () => {
   const forged = client(app.base, sessionCookie(888, 'wrong-secret'));
   assert.equal((await forged.get('/api/activities')).status, 401);
-  const garbage = client(app.base, 'kk_s=abc.def');
+  const garbage = client(app.base, 'lbl_s=abc.def');
   assert.equal((await garbage.get('/api/activities')).status, 401);
   const unknown = client(app.base, sessionCookie(123456));
   assert.equal((await unknown.get('/api/activities')).status, 401, 'token nélküli sportoló');
@@ -148,8 +148,9 @@ test('OAuth: login → callback állapot-ellenőrzéssel → bejelentkezett munk
   const st = await client(app.base, sess).get('/api/status');
   assert.equal(st.json.loggedIn, true);
   assert.equal(st.json.athlete.firstname, 'Mock');
-  const tokens = JSON.parse(fs.readFileSync(path.join(DATA, 'athletes', '777', 'tokens.json'), 'utf8'));
-  assert.match(tokens.accessToken, /^acc-/);
+  const raw = fs.readFileSync(path.join(DATA, 'athletes', '777', 'tokens.json'), 'utf8');
+  assert.match(raw, /"enc":/, 'titkosítva tárolva');
+  assert.doesNotMatch(raw, /acc-/);
 });
 
 test('szinkron: aktivitáslista az ál-Stravából, összegzés és tömör lista', async () => {
@@ -350,7 +351,7 @@ test('kívülről törölt adatmappa: a munkamenet azonnal megszűnik (nem marad
 
 test('kijelentkezés törli a sütit; adattörlés visszavonja a Strava-hozzáférést', async () => {
   const out = await anon().post('/auth/logout');
-  assert.match(out.headers.get('set-cookie'), /kk_s=;/);
+  assert.match(out.headers.get('set-cookie'), /lbl_s=;/);
   const before = strava.state.deauthorized;
   const c = as(777);
   const r = await c.post('/api/forget');

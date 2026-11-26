@@ -90,7 +90,7 @@ await nf('PATCH', `/projects/${P}/services/combined/${SERVICE}`, {
     SESSION_SECRET: current.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
     BASE_URL: `https://${dns}`,
     DATA_DIR: '/data',
-    TRUST_PROXY: 'true',
+    TRUST_PROXY: '1', // a Northflank előtt pontosan egy proxy áll (mérve): így a kliens IP-je nem hamisítható
     NODE_ENV: 'production',
   },
   deployment: { instances: 1 },

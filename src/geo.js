@@ -5,8 +5,10 @@ import net from 'node:net';
 import { GEOIP, DEFAULT_LANG } from './config.js';
 import { normLang } from './i18n.js';
 
-const cache = new Map(); // ip -> { country, at }
+const cache = new Map(); // ip -> { country, at } (beszúrási sorrendben → a legrégebbi törölhető)
+const inflight = new Map(); // ip -> Promise: azonos IP-re egyszerre csak egy külső lekérdezés
 const TTL = 24 * 3600 * 1000;
+const MAX_ENTRIES = 5000; // hamisított/véletlen IP-kkel sem nőhet korlátlanul a memória
 const HU_COUNTRIES = new Set(['HU']);
 
 function isPrivate(ip) {
@@ -19,17 +21,31 @@ function isPrivate(ip) {
   return ip === '::1' || /^f[cd]/i.test(ip) || /^fe80/i.test(ip);
 }
 
-async function lookupCountry(ip) {
+async function lookupCountry(rawIp) {
+  const ip = String(rawIp || '').replace(/^::ffff:/, '');
+  if (ip && !net.isIP(ip)) return null; // nem IP-cím (pl. hamisított fejléc): nincs külső lekérdezés
   const key = isPrivate(ip) ? 'self' : ip;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL) return hit.country;
+  if (inflight.has(key)) return inflight.get(key);
+  const p = fetchCountry(key, ip).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
+async function fetchCountry(key, ip) {
   let country = null;
   try {
     const url = key === 'self' ? GEOIP.url : new URL(encodeURIComponent(ip), GEOIP.url).toString();
     const res = await fetch(url, { signal: AbortSignal.timeout(2500), headers: { Accept: 'application/json' } });
-    if (res.ok) country = String((await res.json()).country || '').toUpperCase() || null;
+    if (res.ok) {
+      const c = String((await res.json()).country || '').toUpperCase();
+      country = /^[A-Z]{2}$/.test(c) ? c : null; // csak érvényes országkód kerül a válaszba
+    }
   } catch { /* hálózati hiba: marad a tartalék */ }
+  cache.delete(key);
   cache.set(key, { country, at: Date.now() });
+  while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value);
   return country;
 }
 

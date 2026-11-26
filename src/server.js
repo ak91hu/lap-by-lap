@@ -22,6 +22,7 @@ import { detectLang } from './geo.js';
 import { importArchive, archiveInfo } from './archive.js';
 import { listPhotos, parseRef, photoFile, thumbFile, downloadName, streamZip } from './photos.js';
 import { addWeather } from './weather.js';
+import { sessionCookieName, signSession, verifySession, SESSION_MAX_AGE_MS, csrfGuard, rateLimit } from './security.js';
 import { sanitizeOptions, slugify } from './options.js';
 import { t, sportName, normLang } from './i18n.js';
 
@@ -47,53 +48,58 @@ app.set('trust proxy', TRUST_PROXY);
 // ------------------------------------------------------------------ biztonsági fejlécek
 
 app.use((req, res, next) => {
-  res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN' });
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()',
+  });
+  if (secure) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   // A PDF-válaszokra nem teszünk CSP-t, mert az a böngésző beépített PDF-nézőjét is korlátozhatja.
   if (!req.path.startsWith('/api/books/')) {
-    res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https: data: blob:; style-src 'self'; script-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self' https://www.strava.com");
+    res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' https: data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'self' https://www.strava.com");
   }
   next();
 });
 
+// Állapotot módosító kérés csak a saját oldalról (CSRF), és IP-nkénti kéréskorlát.
+app.use(csrfGuard(BASE_URL));
+app.use('/auth/login', rateLimit({ windowMs: 60000, max: 60, name: 'login' }));
+app.use(['/api/archive', '/api/cover'], rateLimit({ windowMs: 60000, max: 20, name: 'upload' }));
+app.use(['/api', '/auth'], rateLimit({ windowMs: 60000, max: Number(process.env.RATE_LIMIT_PER_MIN) || 3000, name: 'api' }));
+
 // ------------------------------------------------------------------ aláírt süti alapú munkamenet (szerveroldali tár nélkül)
 
-const COOKIE = 'kk_s';
 const secure = BASE_URL.startsWith('https://');
+const COOKIE = sessionCookieName(secure);
 
 function parseCookies(req) {
   const out = {};
   for (const part of String(req.headers.cookie || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const k = part.slice(0, i).trim();
+    if (k in out) continue; // azonos nevű sütiknél az első (a legpontosabb útvonalú) számít
+    try {
+      out[k] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch { /* hibás kódolás (pl. kívülről „bedobott” süti): kihagyjuk, nem dől el a kérés */ }
   }
   return out;
 }
 
-const sign = (v) => crypto.createHmac('sha256', SESSION_SECRET).update(v).digest('base64url');
-
 app.use((req, res, next) => {
   const cookies = parseCookies(req);
   req.cookies = cookies;
-  req.sess = {};
-  const raw = cookies[COOKIE];
-  if (raw) {
-    const [payload, sig] = raw.split('.');
-    const good = sig && payload && sig.length === sign(payload).length
-      && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(sign(payload)));
-    if (good) {
-      try {
-        req.sess = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-      } catch { /* sérült süti */ }
-    }
-  }
+  req.sess = verifySession(cookies[COOKIE], SESSION_SECRET) || {};
   res.saveSession = (data) => {
     req.sess = data;
-    const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
-    res.cookie(COOKIE, `${payload}.${sign(payload)}`, { httpOnly: true, sameSite: 'lax', secure, maxAge: 30 * 24 * 3600 * 1000, path: '/' });
+    res.cookie(COOKIE, signSession(data, SESSION_SECRET), { httpOnly: true, sameSite: 'lax', secure, maxAge: SESSION_MAX_AGE_MS, path: '/' });
   };
   res.clearSession = () => {
     req.sess = {};
-    res.clearCookie(COOKIE, { path: '/' });
+    res.clearCookie(COOKIE, { path: '/', secure, httpOnly: true, sameSite: 'lax' });
   };
   next();
 });

@@ -18,10 +18,14 @@ import { Decoder, Stream } from '@garmin/fitsdk';
 import { athleteDir, readJson, writeJson, exists } from './store.js';
 import { storeImage, downsampleStreams } from './sync.js';
 
-const gunzip = promisify(zlib.gunzip);
+const gunzipAsync = promisify(zlib.gunzip);
+const gunzip = (buf) => gunzipAsync(buf, { maxOutputLength: MAX_TRACK }); // tömörítési bomba ellen
 const IMAGE_EXT = /\.(jpe?g|png|webp|tiff?|avif|heic|heif)$/i;
 const VIDEO_EXT = /\.(mp4|mov|m4v|avi|3gp)$/i;
 const MAX_ENTRY = 400 * 1024 * 1024;
+const MAX_TRACK = 64 * 1024 * 1024; // egy GPS-fájl (kibontva is) legfeljebb ekkora lehet
+const MAX_ENTRIES = 300000; // ennél több fájlt tartalmazó ZIP gyanús (memória)
+const POINT_SPAN = 4000; // egy <trkpt>/<Trackpoint> legfeljebb ennyi karakter: lineáris idejű feldolgozás
 
 // ---------------------------------------------------------------- ZIP segédek
 
@@ -36,6 +40,11 @@ function listEntries(zip) {
     const map = new Map();
     zip.on('entry', (e) => {
       if (!/\/$/.test(e.fileName)) map.set(e.fileName.replace(/\\/g, '/'), e);
+      if (map.size > MAX_ENTRIES) {
+        zip.close();
+        reject(Object.assign(new Error('archive:too-many-entries'), { code: 'EMPTY' }));
+        return;
+      }
       zip.readEntry();
     });
     zip.once('end', () => resolve(map));
@@ -44,8 +53,8 @@ function listEntries(zip) {
   });
 }
 
-function readEntry(zip, entry) {
-  if (entry.uncompressedSize > MAX_ENTRY) return Promise.reject(new Error('entry too large'));
+function readEntry(zip, entry, max = MAX_ENTRY) {
+  if (entry.uncompressedSize > max) return Promise.reject(new Error('entry too large'));
   return new Promise((resolve, reject) => {
     zip.openReadStream(entry, (err, stream) => {
       if (err) return reject(err);
@@ -155,7 +164,7 @@ function attr(tag, name) {
 
 function parseGpx(xml) {
   const pts = [];
-  const re = /<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g;
+  const re = new RegExp(`<trkpt\\b([^>]{0,500})>([\\s\\S]{0,${POINT_SPAN}}?)</trkpt>`, 'g');
   let m;
   while ((m = re.exec(xml))) {
     const lat = attr(m[1], 'lat');
@@ -171,7 +180,7 @@ function parseGpx(xml) {
 function parseTcx(xml) {
   const pts = [];
   const dist = [];
-  const re = /<Trackpoint>([\s\S]*?)<\/Trackpoint>/g;
+  const re = new RegExp(`<Trackpoint>([\\s\\S]{0,${POINT_SPAN}}?)</Trackpoint>`, 'g');
   let m;
   while ((m = re.exec(xml))) {
     const g = (tag) => {
@@ -350,7 +359,7 @@ export async function importArchive(zipFile, athleteId, ctx) {
       const entry = entries.get(`${root}${a.file}`) || entries.get(a.file);
       if (entry) {
         try {
-          const raw = await parseTrack(a.file, await readEntry(zip, entry));
+          const raw = await parseTrack(a.file, await readEntry(zip, entry, MAX_TRACK));
           if (raw) {
             await writeJson(out, downsampleStreams(raw));
             tracks++;

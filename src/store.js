@@ -1,7 +1,8 @@
 // Fájlalapú tár: JSON-gyorsítótár, tokenek, elkészült könyvek.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, SESSION_SECRET } from './config.js';
+import { tokenKey, encryptJson, decryptJson } from './security.js';
 
 export const athleteDir = (id) => path.join(DATA_DIR, 'athletes', String(Number(id)));
 export const booksDir = (id) => path.join(DATA_DIR, 'books', String(Number(id)));
@@ -47,14 +48,21 @@ export async function loadTokens(id) {
     tokenCache.delete(id);
     return null;
   }
-  const t = await readJson(file);
-  if (t) tokenCache.set(id, t);
+  const stored = await readJson(file);
+  const t = decryptJson(stored, TOKEN_KEY);
+  if (!t) return null; // hiányzó, sérült vagy más kulccsal titkosított fájl → újra be kell jelentkezni
+  tokenCache.set(id, t);
+  if (!stored.enc) await saveTokens(id, t); // régi, titkosítatlan fájl → titkosítva újraírjuk
   return t;
 }
 
+// A Strava-tokenek titkosítva kerülnek a lemezre (AES-256-GCM), így egy kiszivárgott mentés vagy kötet-pillanatkép
+// önmagában nem ad hozzáférést a felhasználók Strava-adataihoz.
+const TOKEN_KEY = tokenKey(SESSION_SECRET);
+
 export async function saveTokens(id, tokens) {
   tokenCache.set(id, tokens);
-  await writeJson(path.join(athleteDir(id), 'tokens.json'), tokens, 0o600);
+  await writeJson(path.join(athleteDir(id), 'tokens.json'), encryptJson(tokens, TOKEN_KEY), 0o600);
 }
 
 export async function deleteTokens(id) {

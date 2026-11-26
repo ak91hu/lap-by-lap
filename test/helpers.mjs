@@ -280,11 +280,14 @@ export async function startApp({ dataDir, strava, env = {} } = {}) {
   };
 }
 
-/** Aláírt munkamenet-süti egy sportolóhoz (ugyanazzal a titokkal, amivel a tesztszerver fut). */
-export function sessionCookie(athleteId, secret = SESSION_SECRET) {
-  const payload = Buffer.from(JSON.stringify({ aid: athleteId })).toString('base64url');
+/**
+ * Aláírt munkamenet-süti egy sportolóhoz (ugyanazzal a titokkal és formátummal, mint a szerver).
+ * HTTP-n a süti neve `lbl_s`, HTTPS-en `__Host-lbl_s`.
+ */
+export function sessionCookie(athleteId, secret = SESSION_SECRET, { secure = false, iat = Date.now() } = {}) {
+  const payload = Buffer.from(JSON.stringify({ aid: athleteId, iat })).toString('base64url');
   const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
-  return `kk_s=${payload}.${sig}`;
+  return `${secure ? '__Host-lbl_s' : 'lbl_s'}=${payload}.${sig}`;
 }
 
 /** Kis HTTP-kliens: JSON-válasz automatikus feldolgozással. */

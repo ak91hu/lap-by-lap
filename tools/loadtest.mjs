@@ -24,7 +24,7 @@ const athletes = [];
 for (let i = 0; i < USERS; i++) athletes.push(await seedAthlete(DATA, { id: 10000 + i, count: 40, photoEvery: 4, photosPer: 4, img: [1000, 667] }));
 
 const strava = await startMockStrava();
-const app = await startApp({ dataDir: DATA, strava, env: { MAX_HEAVY_JOBS: HEAVY, NODE_OPTIONS: `--max-old-space-size=${HEAP_MB}` } });
+const app = await startApp({ dataDir: DATA, strava, env: { RATE_LIMIT_PER_MIN: '10000000', MAX_HEAVY_JOBS: HEAVY, NODE_OPTIONS: `--max-old-space-size=${HEAP_MB}` } });
 console.log(`Server: ${app.base} (MAX_HEAVY_JOBS=${HEAVY}, heap ≤ ${HEAP_MB} MB). Running ${USERS} users for ${DURATION_S}s, ${BOOKS} book requests…`);
 
 const lat = {};

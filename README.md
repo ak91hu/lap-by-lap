@@ -38,6 +38,7 @@
 - [Capacity and concurrent users](#capacity-and-concurrent-users)
 - [Storing finished books](#storing-finished-books)
 - [Privacy and data storage](#privacy-and-data-storage)
+- [Security](#security)
 - [HTTP API](#http-api)
 - [Project structure](#project-structure)
 - [Development](#development)
@@ -242,7 +243,9 @@ All settings are environment variables, read from `.env` when present.
 | `BASE_URL` | `http://localhost:PORT` | Public URL, used for the OAuth callback. An `https://` URL turns on secure cookies. Falls back to `RENDER_EXTERNAL_URL` when present. |
 | `DATA_DIR` | `data` | Cache, tokens, photos and books. Put it on persistent storage. |
 | `SESSION_SECRET` | generated | Signs the session cookie. If empty, one is generated and stored in `DATA_DIR/.session-secret`. Set it explicitly on servers. |
-| `TRUST_PROXY` | `loopback` | Express `trust proxy`: `true`, `false`, a hop count or an address list. Use `true` behind a platform load balancer. |
+| `TRUST_PROXY` | `loopback` | Express `trust proxy`: a hop count, `true`, `false` or an address list. Use the **exact number of proxies** in front of the app (Northflank: `1`, measured), never `true` on a public host: with `true` a client can fake its IP via `X-Forwarded-For`. |
+| `TOKEN_KEY` | from `SESSION_SECRET` | Key for encrypting Strava tokens at rest (AES-256-GCM, via HKDF). If neither is set, a session secret is generated in `DATA_DIR`. Changing it means everyone signs in again. |
+| `RATE_LIMIT_PER_MIN` | `3000` | Requests per minute per client IP for `/api` and `/auth` (sign-in start: 60, uploads: 20). |
 | `GEOIP` | on | `off` disables the IP-country lookup for language detection (falls back to the browser language). |
 | `GEOIP_URL` | `https://api.country.is/` | Country lookup service. Answers are cached for 24 hours. |
 | `DEFAULT_LANG` | `en` | Fallback language (`en` or `hu`). |
@@ -275,7 +278,7 @@ docker build -t lap-by-lap .
 docker run -d --name lap-by-lap -p 3000:3000 \
   -e STRAVA_CLIENT_ID=... -e STRAVA_CLIENT_SECRET=... \
   -e BASE_URL=https://lapbylap.example.com -e SESSION_SECRET=$(openssl rand -hex 32) \
-  -e TRUST_PROXY=true \
+  -e TRUST_PROXY=1 \
   -v lap-by-lap-data:/data \
   lap-by-lap
 ```
@@ -287,7 +290,7 @@ The image is based on `node:24-bookworm-slim`, installs only production dependen
 - A **combined service** `lap-by-lap` builds the `Dockerfile` from this public repository and redeploys on every push to `main`.
 - A **6 GB persistent volume** (`lap-by-lap-data`, NVMe, the smallest size Northflank allows) is mounted at `/data`.
 - Plan `nf-compute-20` (0.2 vCPU / 512 MB), the largest that fits the free allowance.
-- **Secrets live only in the service's runtime variables:** `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` and `SESSION_SECRET`, plus `BASE_URL`, `DATA_DIR=/data`, `TRUST_PROXY=true`. None of them are in the repository.
+- **Secrets live only in the service's runtime variables:** `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` and `SESSION_SECRET`, plus `BASE_URL`, `DATA_DIR=/data`, `TRUST_PROXY=1` (exactly one proxy in front of the app, so client IPs cannot be faked). None of them are in the repository.
 - The Strava *Authorization Callback Domain* is set to the service's `*.code.run` domain.
 
 To set it up again in your own Northflank account:
@@ -402,6 +405,24 @@ Book metadata (`<name>.pdf.json`: size, pages, build, where it is stored) stays 
 - No analytics, no third-party scripts. The only outside calls are Strava, the optional basemap tiles, the optional IP-country lookup for the UI language, and the optional weather lookup (start point rounded to ~10 km plus the date).
 - Strict security headers: CSP, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`. Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` over HTTPS.
 
+## Security
+
+Threat model: a public, multi-user web app that holds Strava tokens, private activity data and photos. What is in place (and covered by `test/security.test.mjs` and `test/server.test.mjs`):
+
+| Area | Protection |
+|---|---|
+| **Sessions** | HMAC-SHA256-signed cookie with an issue time; expires after 30 days, constant-time signature check. `HttpOnly`, `SameSite=Lax`, `Secure` and the **`__Host-` prefix** on HTTPS, so sibling subdomains cannot overwrite it ("cookie tossing"). OAuth `state` is bound to the cookie. |
+| **CSRF** | Every state-changing request (`POST`/`PUT`/`DELETE`) must come from the app's own origin (`Origin` / `Sec-Fetch-Site` check). This matters because `*.code.run` is **not on the Public Suffix List**: other apps there count as "same-site", so `SameSite=Lax` alone would not stop them. |
+| **Tokens at rest** | Strava access and refresh tokens are stored AES-256-GCM-encrypted (`TOKEN_KEY` / HKDF of `SESSION_SECRET`), file mode 600; old plain files are re-encrypted on first use. A leaked volume snapshot alone does not give access to anyone's Strava data. |
+| **Authorization** | Every file is resolved inside the signed-in athlete's own folder; activity, photo, book and cover names are validated against strict patterns (no path traversal); jobs are only visible to their owner. Deleting the token file ends the session immediately. |
+| **XSS / injection** | Strict CSP (`script-src 'self'`, no inline scripts, `object-src 'none'`, `frame-ancestors 'self'`), the UI writes user data only with `textContent`; uploads are re-encoded images served as `image/jpeg` with `nosniff`. |
+| **Headers** | HSTS (on HTTPS), `X-Content-Type-Options`, `Referrer-Policy: same-origin`, `X-Frame-Options`, `Cross-Origin-Opener-Policy` and `-Resource-Policy: same-origin`, a restrictive `Permissions-Policy`, no `X-Powered-By`. |
+| **Abuse / DoS** | Per-IP rate limits; bounded uploads (archive size, free-disk check, 30 MB cover, 1 MB settings); ZIP entry count, entry size and gzip output limits (no zip/gzip bombs); linear-time GPX/TCX parsing; image pixel limits; one job per athlete and a memory-bounded queue for heavy jobs; malformed cookies are ignored instead of failing requests. |
+| **Outbound calls** | Only Strava, its photo CDN, Open-Meteo (start point rounded to ~10 km), the optional tile server, and the IP-country lookup. The country lookup only runs for valid IP addresses, is de-duplicated and cached in a bounded cache, and only accepts 2-letter country codes. |
+| **Secrets & supply chain** | No secrets in the repository or its history (checked); `npm audit`: 0 known vulnerabilities; tests never read `.env` and never call the real Strava API. |
+
+Known limits: signing out clears the cookie on that device but does not revoke other devices' cookies before they expire (30 days); use **Delete my data** to end all sessions. For the strongest cookie isolation, serve the app on your own domain (or a domain on the Public Suffix List, e.g. `*.northflank.app`) instead of `*.code.run`.
+
 ## HTTP API
 
 The UI is a thin client over these endpoints. All `/api/*` routes except `status` and `lang` require a signed-in session.
@@ -481,7 +502,7 @@ The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes an
 
 ## Tests
 
-`npm test` runs 85 tests with Node's built-in test runner. No extra test framework is needed; PDFs are checked with the `mupdf` dev dependency. All tests use **fictional athletes in temporary folders**, a **mock Strava server** (OAuth, API v3, photo CDN) and a **mock S3 server**. They never touch your `data/` folder, never read your `.env` (`LAPBYLAP_NO_DOTENV=1`) and never call the real Strava API (`STRAVA_API_URL` / `STRAVA_OAUTH_URL` point to the mock or to an unreachable local address; these two variables exist only for tests).
+`npm test` runs 96 tests with Node's built-in test runner. No extra test framework is needed; PDFs are checked with the `mupdf` dev dependency. All tests use **fictional athletes in temporary folders**, a **mock Strava server** (OAuth, API v3, photo CDN) and a **mock S3 server**. They never touch your `data/` folder, never read your `.env` (`LAPBYLAP_NO_DOTENV=1`) and never call the real Strava API (`STRAVA_API_URL` / `STRAVA_OAUTH_URL` point to the mock or to an unreachable local address; these two variables exist only for tests).
 
 | Suite | What it covers |
 |---|---|
@@ -490,6 +511,7 @@ The sample book (`tools/build-sample.mjs`) uses procedurally drawn landscapes an
 | `book` | 26 PDF builds: every layout × paper tone, every page size, bleed and crop marks, chapters, order, extras, English/imperial, weather and QR, left-out photos, max photos, yearly volumes and cover spread, books without photos |
 | `server` | The full journey through the real server: OAuth (state, scope, denial), sync, photo fetch, books from API data, photo grid/ZIP, settings, covers, preview and full books, yearly volumes, deletion, archive upload (size limit, broken ZIP), revoked Strava access, logout and data deletion; plus security headers, caching rules, 401s, forged cookies, path traversal and other users' data |
 | `storage` | Retention rules, legacy files, S3 upload with signed requests, local copy removal, streamed and ranged downloads, previews kept local, retention and deletion in S3, data deletion |
+| `security` | Session signing and expiry, token encryption and migration, CSRF from foreign and sibling (`*.code.run`) origins, malformed cookies, rate limits, `__Host-` cookie and HSTS on HTTPS, security headers, gzip bomb and unclosed GPX points, IP validation and de-duplication in the country lookup |
 | `ui-static` | Every element the UI script uses exists, no duplicate ids, Hungarian and English strings match (keys and placeholders), every server job step and job kind has a label, no `innerHTML` with user data |
 
 ## Troubleshooting
